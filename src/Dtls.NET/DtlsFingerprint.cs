@@ -108,6 +108,21 @@ public readonly record struct DtlsFingerprint(
             ? fingerprint
             : throw new FormatException($"\"{value}\" is not a certificate fingerprint.");
 
+    /// <summary>Whether two fingerprints name the same algorithm and hash bytes.</summary>
+    /// <param name="other">The other fingerprint.</param>
+    /// <returns>Whether they are equal.</returns>
+    public bool Equals(DtlsFingerprint other) =>
+        Algorithm == other.Algorithm && Hash.AsSpan().SequenceEqual(other.Hash.AsSpan());
+
+    /// <inheritdoc/>
+    public override int GetHashCode()
+    {
+        HashCode hash = default;
+        hash.Add(Algorithm);
+        hash.AddBytes(Hash.AsSpan());
+        return hash.ToHashCode();
+    }
+
     /// <summary>SDP's form: <c>sha-256 AB:CD:...</c>.</summary>
     /// <returns>The attribute value.</returns>
     public override string ToString() =>
