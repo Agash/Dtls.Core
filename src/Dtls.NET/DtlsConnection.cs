@@ -83,6 +83,9 @@ public sealed class DtlsConnection : IAsyncDisposable
     /// <summary>The peer's certificate, which the handshake validated.</summary>
     public X509Certificate2? RemoteCertificate => _protocol.RemoteCertificate;
 
+    /// <summary>The DTLS version the handshake settled on.</summary>
+    public DtlsProtocols NegotiatedProtocol => _protocol.NegotiatedProtocol;
+
     /// <summary>The cipher suite the handshake chose.</summary>
     public TlsCipherSuite NegotiatedCipherSuite => _protocol.NegotiatedCipherSuite;
 
@@ -246,6 +249,18 @@ public sealed class DtlsConnection : IAsyncDisposable
             nameof(context)
         );
         Export(label, context, useContext: true, destination);
+    }
+
+    // For tests: a DTLS 1.3 KeyUpdate, asking the peer to update its keys too.
+    internal async ValueTask RequestKeyUpdateAsync()
+    {
+        lock (_lock)
+        {
+            _protocol.RequestKeyUpdate();
+            Observe();
+        }
+
+        await FlushAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
     /// <summary>Closes the connection, telling the peer with a close_notify alert.</summary>

@@ -23,10 +23,14 @@ internal enum ProtocolState
     Failed,
 }
 
-// One DTLS 1.2 connection (RFC 6347) with no I/O of its own: it is handed the datagrams that arrive
-// from the peer and the time, and queues the datagrams to send. The handshake, record protection,
-// fragmentation, retransmission and replay protection happen here; DtlsConnection drives it over a
-// datagram transport. Not thread-safe: the driver serialises every call.
+// One DTLS connection, 1.2 (RFC 6347) or 1.3 (RFC 9147), with no I/O of its own: it is handed the
+// datagrams that arrive from the peer and the time, and queues the datagrams to send. The handshake,
+// record protection, fragmentation, retransmission and replay protection happen here; DtlsConnection
+// drives it over a datagram transport. Not thread-safe: the driver serialises every call.
+//
+// The version is settled by the hellos: a client offers the versions it allows in one ClientHello and
+// the server's answer (a HelloVerifyRequest or DTLS 1.2 ServerHello, or a DTLS 1.3 ServerHello or
+// HelloRetryRequest) decides which half of this class runs the rest.
 internal sealed partial class DtlsProtocol(ProtocolSettings settings, object owner, ILogger logger)
     : IDisposable
 {
@@ -77,7 +81,16 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
         CertificateVerify,
         Finished,
         Done,
+
+        // DTLS 1.3.
+        SecondClientHello,
+        EncryptedExtensions,
+        CertificateRequestOrCertificate,
+        ServerCertificateVerify,
     }
+
+    // The version the hellos settled on; None until then.
+    public DtlsProtocols NegotiatedProtocol => _version;
 
     public DtlsRole Role => _settings.Role;
 
@@ -247,6 +260,19 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
             throw new InvalidOperationException("Keying material is exported once connected.");
         }
 
+        if (_version == DtlsProtocols.Dtls13)
+        {
+            KeySchedule13.Export(
+                _suite.PrfHash,
+                KeySchedule13.DtlsPrefix,
+                _exporterSecret,
+                label,
+                context,
+                destination
+            );
+            return;
+        }
+
         (byte[] client, byte[] server) = Randoms;
         KeySchedule.Export(
             _suite,
@@ -265,6 +291,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
         _records.Dispose();
         _transcript.Dispose();
         _keyShare?.Dispose();
+        Dispose13();
         _pendingRead?.Dispose();
         _remoteCertificate?.Dispose();
         if (_masterSecret is not null)
@@ -290,22 +317,29 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
             return;
         }
 
-        // Once connected, only the current epoch is authenticated; what arrives in epoch 0 is read
-        // only to recognise the peer retransmitting its last flight.
+        // Once connected, only DTLS 1.2's current epoch or DTLS 1.3's traffic epochs are authenticated;
+        // what arrives in epoch 0 is read only to recognise the peer retransmitting its last flight.
+        bool tls13 = _version == DtlsProtocols.Dtls13;
         bool current = epoch == _records.ReadEpoch;
+        bool authenticated = tls13 ? epoch >= HandshakeEpoch : current;
         switch (type)
         {
             case ContentType.Handshake:
                 ReceiveHandshake(epoch, sequence, payload);
                 break;
-            case ContentType.ChangeCipherSpec when current:
+            case ContentType.ChangeCipherSpec when current && !tls13:
                 ReceiveChangeCipherSpec(payload);
                 break;
-            case ContentType.Alert when current || State == ProtocolState.Handshaking:
+            case ContentType.Alert when authenticated || State == ProtocolState.Handshaking:
                 ReceiveAlert(payload);
                 break;
+            case ContentType.Ack when tls13:
+                ReceiveAck(payload);
+                break;
             case ContentType.ApplicationData
-                when current && epoch > 0 && State == ProtocolState.Connected && !payload.IsEmpty:
+                when (tls13 ? epoch >= ApplicationEpoch : current && epoch > 0)
+                    && State == ProtocolState.Connected
+                    && !payload.IsEmpty:
                 applicationData.Add(new Range(offset, offset + payload.Length));
                 break;
             default:
@@ -324,31 +358,56 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
         }
 
         bool encrypted = epoch > 0;
+        bool used = false;
         while (HandshakeFragment.TryReadNext(ref record, out HandshakeFragment fragment))
         {
-            // The initial handshake sends its Finished messages, and nothing else, encrypted.
-            bool finished = fragment.Type == HandshakeType.Finished;
-            if (finished != encrypted)
+            if (_version == DtlsProtocols.Dtls13)
             {
-                if (encrypted && State == ProtocolState.Connected)
+                // Only the hellos travel unencrypted in DTLS 1.3 (RFC 9147 §6.1).
+                bool hello =
+                    fragment.Type is HandshakeType.ClientHello or HandshakeType.ServerHello;
+                if (hello == encrypted)
                 {
-                    RefuseRenegotiation(fragment);
+                    break;
                 }
+            }
+            else
+            {
+                // The initial DTLS 1.2 handshake sends its Finished messages, and nothing else,
+                // encrypted.
+                bool finished = fragment.Type == HandshakeType.Finished;
+                if (finished != encrypted)
+                {
+                    if (encrypted && State == ProtocolState.Connected)
+                    {
+                        RefuseRenegotiation(fragment);
+                    }
 
-                break;
+                    break;
+                }
             }
 
-            _ = _reassembler.Add(fragment);
+            used |= _reassembler.Add(fragment);
         }
 
         while (_reassembler.TryDequeue(out HandshakeMessage message))
         {
+            if (_version == DtlsProtocols.Dtls13 && State == ProtocolState.Connected)
+            {
+                ReceivePostHandshake(message);
+                continue;
+            }
+
             if (State != ProtocolState.Handshaking)
             {
                 continue;
             }
 
-            if (Role == DtlsRole.Client)
+            if (_version == DtlsProtocols.Dtls13)
+            {
+                Receive13(message);
+            }
+            else if (Role == DtlsRole.Client)
             {
                 ClientReceive(message);
             }
@@ -356,6 +415,11 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
             {
                 ServerReceive(message);
             }
+        }
+
+        if (used && encrypted && _version == DtlsProtocols.Dtls13)
+        {
+            HandshakeRecordReceived(epoch, recordSequence);
         }
     }
 
@@ -424,6 +488,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
     private void SendFlight(Flight flight, bool timed)
     {
         _reassembler.FlightAnswered();
+        _handshakeRecords.Clear();
         _flight = flight;
         _flightTimed = timed;
         _timeout = _settings.InitialRetransmissionTimeout;
@@ -445,9 +510,10 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
         State = ProtocolState.Connected;
         _step = Step.Done;
         _handshakeDeadline = long.MaxValue;
-        if (Role == DtlsRole.Client)
+        if (Role == DtlsRole.Client && _version != DtlsProtocols.Dtls13)
         {
-            // The server's Finished answers the client's last flight; nothing is resent from here.
+            // The server's Finished answers the client's last DTLS 1.2 flight; nothing is resent from
+            // here. The client's last DTLS 1.3 flight is sent until the server acknowledges it.
             _flightTimed = false;
         }
 
@@ -455,17 +521,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
         {
             (int key, int salt) = SrtpKeyingMaterial.Lengths(profile);
             Span<byte> material = stackalloc byte[(2 * key) + (2 * salt)];
-            (byte[] client, byte[] server) = Randoms;
-            KeySchedule.Export(
-                _suite,
-                _masterSecret,
-                SrtpKeyingMaterial.ExporterLabel,
-                client,
-                server,
-                [],
-                useContext: false,
-                material
-            );
+            ExportKeyingMaterial(SrtpKeyingMaterial.ExporterLabel, [], useContext: false, material);
             SrtpKeyingMaterial = SrtpKeyingMaterial.Split(profile, material);
             CryptographicOperations.ZeroMemory(material);
         }

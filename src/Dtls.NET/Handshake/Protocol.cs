@@ -1,12 +1,14 @@
 namespace Dtls.NET.Handshake;
 
-// Handshake message types (RFC 5246 §7.4, RFC 6347 §4.2.2).
+// Handshake message types (RFC 5246 §7.4, RFC 6347 §4.2.2, RFC 8446 §4).
 internal enum HandshakeType : byte
 {
     HelloRequest = 0,
     ClientHello = 1,
     ServerHello = 2,
     HelloVerifyRequest = 3,
+    NewSessionTicket = 4,
+    EncryptedExtensions = 8,
     Certificate = 11,
     ServerKeyExchange = 12,
     CertificateRequest = 13,
@@ -14,6 +16,10 @@ internal enum HandshakeType : byte
     CertificateVerify = 15,
     ClientKeyExchange = 16,
     Finished = 20,
+    KeyUpdate = 24,
+
+    // The stand-in for a ClientHello in the transcript after a HelloRetryRequest (RFC 8446 §4.4.1).
+    MessageHash = 254,
 }
 
 // Extension types Dtls.NET sends or reads.
@@ -24,6 +30,9 @@ internal static class ExtensionType
     public const ushort SignatureAlgorithms = 13;
     public const ushort UseSrtp = 14;
     public const ushort ExtendedMasterSecret = 23;
+    public const ushort SupportedVersions = 43;
+    public const ushort Cookie = 44;
+    public const ushort KeyShare = 51;
     public const ushort ApplicationLayerProtocolNegotiation = 16;
     public const ushort RenegotiationInfo = 0xFF01;
 }

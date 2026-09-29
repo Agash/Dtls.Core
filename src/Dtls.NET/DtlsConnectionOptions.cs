@@ -34,9 +34,18 @@ public abstract class DtlsConnectionOptions
     public IList<SrtpProtectionProfile> SrtpProtectionProfiles { get; set; } = [];
 
     /// <summary>
-    /// The cipher suites offered or accepted, most preferred first; null for the defaults (the ECDHE
-    /// suites with AES-GCM and, where the platform has it, ChaCha20-Poly1305). Suites Dtls.NET does not
-    /// implement, the platform cannot run, or the certificate cannot sign for are left out.
+    /// The DTLS versions the handshake may agree on; DTLS 1.2 and 1.3 by default. The highest both sides
+    /// allow is used, and a server that allows 1.3 marks a 1.2 handshake so a client that allows 1.3
+    /// detects an attacker forcing it down (RFC 8446 §4.1.3).
+    /// </summary>
+    public DtlsProtocols EnabledProtocols { get; set; } =
+        DtlsProtocols.Dtls12 | DtlsProtocols.Dtls13;
+
+    /// <summary>
+    /// The cipher suites offered or accepted, most preferred first; null for the defaults (for DTLS 1.2
+    /// the ECDHE suites with AES-GCM and, where the platform has it, ChaCha20-Poly1305; for DTLS 1.3
+    /// AES-GCM and ChaCha20-Poly1305). Suites Dtls.NET does not implement, the platform cannot run, or
+    /// the certificate cannot sign for are left out.
     /// </summary>
     public IList<TlsCipherSuite>? CipherSuites { get; set; }
 
@@ -95,6 +104,16 @@ public abstract class DtlsConnectionOptions
         }
 
         ArgumentNullException.ThrowIfNull(SrtpProtectionProfiles, nameof(SrtpProtectionProfiles));
+        if (
+            (EnabledProtocols & (DtlsProtocols.Dtls12 | DtlsProtocols.Dtls13)) == DtlsProtocols.None
+        )
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(EnabledProtocols),
+                EnabledProtocols,
+                "At least one of DTLS 1.2 and DTLS 1.3 must be enabled."
+            );
+        }
     }
 }
 

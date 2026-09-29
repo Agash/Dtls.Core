@@ -63,6 +63,12 @@ public enum DtlsAlert : byte
     /// <summary>The sender does not renegotiate (a warning).</summary>
     NoRenegotiation = 100,
 
+    /// <summary>A DTLS 1.3 message lacks an extension it must carry.</summary>
+    MissingExtension = 109,
+
+    /// <summary>A DTLS 1.3 server requires a certificate and the client sent none.</summary>
+    CertificateRequired = 116,
+
     /// <summary>An extension the peer should not have sent.</summary>
     UnsupportedExtension = 110,
 

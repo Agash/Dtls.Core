@@ -52,11 +52,7 @@ internal sealed partial class DtlsProtocol
     [LoggerMessage(10, LogLevel.Debug, "Reading epoch {Epoch}")]
     private partial void LogReadEpoch(ushort epoch);
 
-    [LoggerMessage(
-        11,
-        LogLevel.Debug,
-        "Sent a HelloVerifyRequest: the client proves its address with a cookie first"
-    )]
+    [LoggerMessage(11, LogLevel.Debug, "Asked the client to prove its address with a cookie first")]
     private partial void LogCookieSent();
 
     [LoggerMessage(
@@ -68,6 +64,13 @@ internal sealed partial class DtlsProtocol
 
     [LoggerMessage(13, LogLevel.Debug, "Dropped a ClientHello that could not be read: {Reason}")]
     private partial void LogClientHelloDropped(string reason);
+
+    [LoggerMessage(
+        15,
+        LogLevel.Debug,
+        "The server sent a HelloRetryRequest; sending the ClientHello again"
+    )]
+    private partial void LogRetryRequested();
 
     [LoggerMessage(
         14,

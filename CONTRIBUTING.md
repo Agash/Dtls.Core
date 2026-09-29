@@ -38,6 +38,10 @@ tests run each platform's own DTLS against Dtls.NET and compare the keying mater
 - `SchannelInteropTests`: Schannel through SSPI (`SchannelPeer`), on Windows.
 - `NetworkFrameworkInteropTests`: Network.framework through `tests/NetworkFrameworkPeer/peer.swift`, run
   with `swift` on macOS.
+- `WolfSslInteropTests`: wolfSSL's example client and server, the DTLS 1.3 peer, when
+  `DTLS_WOLFSSL_EXAMPLES` names the examples directory of a wolfSSL built with `--enable-dtls
+  --enable-dtls13 --enable-srtp --enable-dtls-frag-ch --enable-keying-material --enable-opensslextra`
+  (CI builds it on Linux).
 
 ## Pull requests
 

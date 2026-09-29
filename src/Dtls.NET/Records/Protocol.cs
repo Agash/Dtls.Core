@@ -13,11 +13,12 @@ internal enum ContentType : byte
 }
 
 // The DTLS version numbers, the one's complement of the TLS numbers they correspond to (RFC 6347
-// §4.1): DTLS 1.0 is 254.255, DTLS 1.2 is 254.253.
+// §4.1): DTLS 1.0 is 254.255, DTLS 1.2 is 254.253 and DTLS 1.3 (RFC 9147 §5.3) is 254.252.
 internal static class ProtocolVersion
 {
     public const ushort Dtls10 = 0xFEFF;
     public const ushort Dtls12 = 0xFEFD;
+    public const ushort Dtls13 = 0xFEFC;
 }
 
 // A record header (RFC 6347 §4.1): type, version, epoch, 48-bit sequence number and length.

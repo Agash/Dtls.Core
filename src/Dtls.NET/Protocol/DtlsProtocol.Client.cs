@@ -12,21 +12,32 @@ internal sealed partial class DtlsProtocol
     private bool _cookieReceived;
     private CertificateRequest? _certificateRequest;
 
-    // Flight 1 (and 3, with the server's cookie): the ClientHello.
+    // Flight 1 (and 3, with the server's cookie): the ClientHello. It offers every version this side
+    // allows: DTLS 1.3 through supported_versions and a key share, DTLS 1.2 through the legacy fields
+    // and its extensions; the server's answer decides.
     private void SendClientHello(byte[] cookie)
     {
+        bool allows12 = _settings.Allows12;
+        bool allows13 = _settings.Allows13;
         Extensions extensions = new Extensions()
             .Add(
                 ExtensionType.SupportedGroups,
                 HelloExtensions.SupportedGroups(KeyShare.SupportedGroups)
             )
-            .Add(ExtensionType.EcPointFormats, HelloExtensions.PointFormats())
             .Add(
                 ExtensionType.SignatureAlgorithms,
-                HelloExtensions.SignatureAlgorithms(Signatures.Accepted)
-            )
-            .Add(ExtensionType.ExtendedMasterSecret, [])
-            .Add(ExtensionType.RenegotiationInfo, HelloExtensions.EmptyRenegotiationInfo());
+                HelloExtensions.SignatureAlgorithms(
+                    allows12 ? Signatures.Accepted : Signatures.Accepted13
+                )
+            );
+        if (allows12)
+        {
+            _ = extensions
+                .Add(ExtensionType.EcPointFormats, HelloExtensions.PointFormats())
+                .Add(ExtensionType.ExtendedMasterSecret, [])
+                .Add(ExtensionType.RenegotiationInfo, HelloExtensions.EmptyRenegotiationInfo());
+        }
+
         if (!_settings.SrtpProfiles.IsEmpty)
         {
             _ = extensions.Add(
@@ -43,15 +54,45 @@ internal sealed partial class DtlsProtocol
             );
         }
 
+        if (allows13)
+        {
+            _keyShare13 ??= KeyShare.Create(KeyShare.SupportedGroups.First());
+            _ = extensions
+                .Add(
+                    ExtensionType.SupportedVersions,
+                    Messages13.SupportedVersions(
+                        allows12
+                            ? [ProtocolVersion.Dtls13, ProtocolVersion.Dtls12]
+                            : [ProtocolVersion.Dtls13]
+                    )
+                )
+                .Add(
+                    ExtensionType.KeyShare,
+                    Messages13.ClientKeyShares([(_keyShare13.Group, _keyShare13.PublicKey)])
+                );
+            if (_cookie13 is not null)
+            {
+                _ = extensions.Add(ExtensionType.Cookie, Messages13.Cookie(_cookie13));
+            }
+        }
+
         ClientHello hello = new(
             _localRandom,
             [],
             cookie,
-            [.. _settings.CipherSuites.Select(static s => (ushort)s.Suite)],
+            [
+                .. (allows13 ? _settings.CipherSuites13 : []).Select(static s => (ushort)s.Suite),
+                .. (allows12 ? _settings.CipherSuites : []).Select(static s => (ushort)s.Suite),
+            ],
             extensions
         );
         HandshakeMessage message = NewMessage(HandshakeType.ClientHello, hello.Encode);
         _transcript.Add(message);
+        if (allows13)
+        {
+            (_transcript13 ??= new Transcript()).Add13(message.Type, message.Body);
+        }
+
         Flight flight = new();
         flight.AddMessage(0, message);
         SendFlight(flight, timed: true);
@@ -62,11 +103,35 @@ internal sealed partial class DtlsProtocol
         switch (_step, message.Type)
         {
             case (Step.ServerHello, HandshakeType.HelloVerifyRequest) when !_cookieReceived:
+                // Only a DTLS 1.2 server sends a HelloVerifyRequest (RFC 9147 §5.2).
+                RequireVersion(DtlsProtocols.Dtls12);
                 ReceiveHelloVerifyRequest(message);
                 return;
             case (Step.ServerHello, HandshakeType.ServerHello):
+                ServerHello serverHello = ServerHello.Decode(message.Body);
+                if (
+                    serverHello.Extensions.TryGet(
+                        ExtensionType.SupportedVersions,
+                        out ReadOnlySpan<byte> selected
+                    )
+                )
+                {
+                    if (Messages13.ReadSelectedVersion(selected) != ProtocolVersion.Dtls13)
+                    {
+                        throw DtlsException.IllegalParameter(
+                            "the server selected a version that was not offered"
+                        );
+                    }
+
+                    RequireVersion(DtlsProtocols.Dtls13);
+                    ReceiveServerHello13(message, serverHello);
+                    return;
+                }
+
+                RequireVersion(DtlsProtocols.Dtls12);
+                _version = DtlsProtocols.Dtls12;
                 _transcript.Add(message);
-                ReceiveServerHello(ServerHello.Decode(message.Body));
+                ReceiveServerHello(serverHello);
                 _step = Step.ServerCertificate;
                 return;
             case (Step.ServerCertificate, HandshakeType.Certificate):
@@ -133,6 +198,16 @@ internal sealed partial class DtlsProtocol
                 isRemote: false,
                 $"The server chose version 0x{hello.Version:X4}; Dtls.NET speaks DTLS 1.2."
             );
+        }
+
+        // A server that speaks DTLS 1.3 marks a DTLS 1.2 ServerHello (RFC 8446 §4.1.3): seeing the mark
+        // after offering 1.3 means an attacker removed the offer.
+        if (
+            _settings.Allows13
+            && hello.Random.AsSpan(24).SequenceEqual(Messages13.DowngradeSentinel)
+        )
+        {
+            throw DtlsException.IllegalParameter("the server marked a downgrade from DTLS 1.3");
         }
 
         _peerRandom = hello.Random;

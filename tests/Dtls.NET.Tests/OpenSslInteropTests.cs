@@ -233,7 +233,7 @@ public sealed partial class OpenSslInteropTests
         return Convert.ToHexString(ours);
     }
 
-    private static int FreePort()
+    internal static int FreePort()
     {
         using Socket probe = new(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
         probe.Bind(new IPEndPoint(IPAddress.Loopback, 0));
@@ -244,7 +244,7 @@ public sealed partial class OpenSslInteropTests
     private static partial Regex KeyingMaterial();
 
     // A certificate and its key as PEM files for OpenSSL.
-    private sealed class TempPem : IDisposable
+    internal sealed class TempPem : IDisposable
     {
         public TempPem(X509Certificate2 certificate)
         {

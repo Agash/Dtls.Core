@@ -33,6 +33,8 @@ internal ref struct WireReader(ReadOnlySpan<byte> data)
             | BinaryPrimitives.ReadUInt32BigEndian(bytes[2..]);
     }
 
+    public uint ReadUInt32() => BinaryPrimitives.ReadUInt32BigEndian(Take(4));
+
     public ReadOnlySpan<byte> ReadBytes(int count) => Take(count);
 
     // An opaque vector with a one-byte length (<0..2^8-1>).

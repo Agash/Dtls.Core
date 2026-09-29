@@ -257,27 +257,51 @@ internal sealed class HandshakeReassembler(int maximumMessage)
     }
 }
 
-// One flight of this side's handshake (RFC 6347 §4.2.4): its messages and ChangeCipherSpec, kept so
-// the whole flight can be sent again when the peer's answer does not come. Every transmission is
-// fragmented to fit the path's MTU in its epoch, and uses new record sequence numbers.
+// One flight of this side's handshake (RFC 6347 §4.2.4, RFC 9147 §5.8): its messages (and in DTLS 1.2
+// its ChangeCipherSpec), kept so the flight can be sent again when the peer's answer does not come.
+// Every transmission is fragmented to fit the path's MTU in its epoch and uses new record sequence
+// numbers. In DTLS 1.3 the peer acknowledges records (RFC 9147 §7): a message whose records of its
+// latest transmission have all been acknowledged is not sent again.
 internal sealed class Flight
 {
     private readonly List<Entry> _entries = [];
+    private readonly HashSet<(ushort Epoch, ulong Sequence)> _acknowledged = [];
 
     public bool IsEmpty => _entries.Count == 0;
+
+    // Whether every message of the flight has been acknowledged.
+    public bool IsAcknowledged => _entries.TrueForAll(static e => e.Acknowledged);
 
     public void AddMessage(ushort epoch, HandshakeMessage message) =>
         _entries.Add(new Entry(epoch, message));
 
     public void AddChangeCipherSpec(ushort epoch) => _entries.Add(new Entry(epoch, null));
 
+    public void Acknowledge(IEnumerable<(ushort Epoch, ulong Sequence)> records)
+    {
+        _acknowledged.UnionWith(records);
+        foreach (Entry entry in _entries)
+        {
+            entry.Acknowledged |=
+                entry.Records.Count > 0 && entry.Records.TrueForAll(_acknowledged.Contains);
+        }
+    }
+
     public void Transmit(RecordLayer records, WireWriter scratch)
     {
         foreach (Entry entry in _entries)
         {
+            if (entry.Acknowledged)
+            {
+                continue;
+            }
+
+            entry.Records.Clear();
             if (entry.Message is not { } message)
             {
-                _ = records.Write(ContentType.ChangeCipherSpec, entry.Epoch, [1]);
+                entry.Records.Add(
+                    (entry.Epoch, records.Write(ContentType.ChangeCipherSpec, entry.Epoch, [1]))
+                );
                 continue;
             }
 
@@ -306,7 +330,12 @@ internal sealed class Flight
                     count
                 );
                 scratch.WriteBytes(message.Body.AsSpan(offset, count));
-                _ = records.Write(ContentType.Handshake, entry.Epoch, scratch.Written);
+                entry.Records.Add(
+                    (
+                        entry.Epoch,
+                        records.Write(ContentType.Handshake, entry.Epoch, scratch.Written)
+                    )
+                );
                 offset += count;
             } while (offset < message.Body.Length);
         }
@@ -314,5 +343,15 @@ internal sealed class Flight
         records.Flush();
     }
 
-    private readonly record struct Entry(ushort Epoch, HandshakeMessage? Message);
+    private sealed class Entry(ushort epoch, HandshakeMessage? message)
+    {
+        public ushort Epoch { get; } = epoch;
+
+        public HandshakeMessage? Message { get; } = message;
+
+        // The records of the latest transmission.
+        public List<(ushort Epoch, ulong Sequence)> Records { get; } = [];
+
+        public bool Acknowledged { get; set; }
+    }
 }

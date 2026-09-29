@@ -68,6 +68,13 @@ internal sealed partial class DtlsProtocol
             return;
         }
 
+        // A DTLS 1.3 handshake exchanges its cookie in a HelloRetryRequest instead (RFC 9147 §5.1).
+        if (Offers13(hello))
+        {
+            ServerReceive(message);
+            return;
+        }
+
         _cookieSecret ??= RandomNumberGenerator.GetBytes(32);
         Span<byte> expected = stackalloc byte[CookieLength];
         Cookie(hello, expected);
@@ -122,9 +129,25 @@ internal sealed partial class DtlsProtocol
         switch (_step, message.Type)
         {
             case (Step.ClientHello, HandshakeType.ClientHello):
+                ClientHello clientHello = ClientHello.Decode(message.Body);
+                if (Offers13(clientHello))
+                {
+                    _version = DtlsProtocols.Dtls13;
+                    ReceiveClientHello13(message, clientHello);
+                    return;
+                }
+
+                RequireVersion(DtlsProtocols.Dtls12);
+                _version = DtlsProtocols.Dtls12;
+                if (_settings.Allows13)
+                {
+                    // A server that speaks DTLS 1.3 marks a DTLS 1.2 ServerHello (RFC 8446 §4.1.3).
+                    Messages13.DowngradeSentinel.CopyTo(_localRandom.AsSpan(24));
+                }
+
                 _transcript.Add(message);
                 _sendSequence = message.MessageSeq;
-                ReceiveClientHello(ClientHello.Decode(message.Body));
+                ReceiveClientHello(clientHello);
                 SendServerHelloFlight();
                 _step = _settings.ClientCertificateRequired
                     ? Step.ClientCertificate
@@ -254,6 +277,13 @@ internal sealed partial class DtlsProtocol
             _peerSignatureSchemes = HelloExtensions.ReadSignatureAlgorithms(schemes);
         }
 
+        SelectSrtpAndApplicationProtocol(extensions);
+    }
+
+    // DTLS-SRTP and ALPN from the client's offers, by this server's preference (RFC 5764 §4.1.1, RFC
+    // 7301 §3.2). A server that asks for DTLS-SRTP requires it.
+    private void SelectSrtpAndApplicationProtocol(Extensions extensions)
+    {
         if (!_settings.SrtpProfiles.IsEmpty)
         {
             List<SrtpProtectionProfile> offered = extensions.TryGet(

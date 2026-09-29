@@ -126,6 +126,70 @@ internal static class Signatures
         }
     }
 
+    // The schemes DTLS 1.3 accepts, most preferred first. In TLS 1.3 an ECDSA scheme is bound to its
+    // curve and RSA signs only with PSS (RFC 8446 §4.2.3).
+    public static ImmutableArray<SignatureScheme> Accepted13 { get; } =
+    [
+        SignatureScheme.EcdsaSecp256r1Sha256,
+        SignatureScheme.EcdsaSecp384r1Sha384,
+        SignatureScheme.RsaPssRsaeSha256,
+        SignatureScheme.RsaPssRsaeSha384,
+    ];
+
+    public static bool CanSign13(LocalCredential certificate, SignatureScheme scheme) =>
+        scheme switch
+        {
+            SignatureScheme.EcdsaSecp256r1Sha256 => certificate.EcdsaKeySize == 256,
+            SignatureScheme.EcdsaSecp384r1Sha384 => certificate.EcdsaKeySize == 384,
+            SignatureScheme.RsaPssRsaeSha256 or SignatureScheme.RsaPssRsaeSha384 => certificate.Rsa
+                is not null,
+            _ => false,
+        };
+
+    public static SignatureScheme Choose13(
+        LocalCredential certificate,
+        IEnumerable<SignatureScheme> peerSchemes
+    )
+    {
+        foreach (SignatureScheme scheme in peerSchemes)
+        {
+            if (CanSign13(certificate, scheme))
+            {
+                return scheme;
+            }
+        }
+
+        throw DtlsException.HandshakeFailure(
+            "the peer accepts no DTLS 1.3 signature scheme this certificate can sign with"
+        );
+    }
+
+    // Verifies a DTLS 1.3 signature: the scheme must be one DTLS 1.3 allows and, for ECDSA, match the
+    // key's curve.
+    public static bool Verify13(
+        X509Certificate2 certificate,
+        SignatureScheme scheme,
+        ReadOnlySpan<byte> data,
+        ReadOnlySpan<byte> signature
+    )
+    {
+        if (!Accepted13.Contains(scheme))
+        {
+            return false;
+        }
+
+        if (scheme is SignatureScheme.EcdsaSecp256r1Sha256 or SignatureScheme.EcdsaSecp384r1Sha384)
+        {
+            using ECDsa? ecdsa = certificate.GetECDsaPublicKey();
+            if (ecdsa?.KeySize != (scheme == SignatureScheme.EcdsaSecp256r1Sha256 ? 256 : 384))
+            {
+                return false;
+            }
+        }
+
+        return Verify(certificate, scheme, data, signature);
+    }
+
     private static HashAlgorithmName Hash(SignatureScheme scheme) =>
         scheme switch
         {

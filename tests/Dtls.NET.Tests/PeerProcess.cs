@@ -16,7 +16,11 @@ internal sealed class PeerProcess : IDisposable
 
     private PeerProcess(Process process) => _process = process;
 
-    public static PeerProcess Start(string fileName, string arguments)
+    public static PeerProcess Start(
+        string fileName,
+        string arguments,
+        string? workingDirectory = null
+    )
     {
         ProcessStartInfo start = new(fileName, arguments)
         {
@@ -24,6 +28,7 @@ internal sealed class PeerProcess : IDisposable
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
+            WorkingDirectory = workingDirectory ?? "",
         };
         Process process;
         try

@@ -29,6 +29,26 @@ internal sealed class Transcript : IDisposable
         _length += HandshakeFragment.HeaderSize + message.Body.Length;
     }
 
+    // DTLS 1.3 hashes messages as TLS 1.3 does, with only the type and length in front (RFC 9147 §5.2).
+    public void Add13(HandshakeType type, ReadOnlySpan<byte> body)
+    {
+        Ensure(4 + body.Length);
+        Span<byte> header = _buffer.AsSpan(_length, 4);
+        header[0] = (byte)type;
+        WriteUInt24(header[1..], body.Length);
+        body.CopyTo(_buffer.AsSpan(_length + 4));
+        _length += 4 + body.Length;
+    }
+
+    // After a HelloRetryRequest the first ClientHello is replaced by a message_hash message holding its
+    // hash (RFC 8446 §4.4.1).
+    public void ReplaceWithMessageHash(HashAlgorithmName algorithm)
+    {
+        byte[] hash = Hash(algorithm);
+        Clear();
+        Add13(HandshakeType.MessageHash, hash);
+    }
+
     // Forgets everything, as when a HelloVerifyRequest makes the first ClientHello not count (RFC
     // 6347 §4.2.1).
     public void Clear() => _length = 0;

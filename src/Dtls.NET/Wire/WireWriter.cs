@@ -48,6 +48,8 @@ internal sealed class WireWriter(int capacity = 256)
         BinaryPrimitives.WriteUInt32BigEndian(bytes[2..], (uint)value);
     }
 
+    public void WriteUInt32(uint value) => BinaryPrimitives.WriteUInt32BigEndian(Grow(4), value);
+
     public void WriteBytes(ReadOnlySpan<byte> value) => value.CopyTo(Grow(value.Length));
 
     public void WriteVector8(ReadOnlySpan<byte> value)

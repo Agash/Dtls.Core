@@ -4,10 +4,12 @@
 [![build](https://github.com/Agash/Dtls.NET/actions/workflows/build.yml/badge.svg)](https://github.com/Agash/Dtls.NET/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-DTLS 1.2 ([RFC 6347](https://www.rfc-editor.org/rfc/rfc6347)) for .NET 11, on the platform's own
-cryptography: an authenticated, encrypted datagram channel to one peer, and with DTLS-SRTP
+DTLS 1.2 ([RFC 6347](https://www.rfc-editor.org/rfc/rfc6347)) and DTLS 1.3
+([RFC 9147](https://www.rfc-editor.org/rfc/rfc9147)) for .NET 11, on the platform's own cryptography:
+an authenticated, encrypted datagram channel to one peer, and with DTLS-SRTP
 ([RFC 5764](https://www.rfc-editor.org/rfc/rfc5764)) the keys for its media. It is what WebRTC runs its
-handshake with, and it interoperates with OpenSSL in both directions.
+handshake with, and it interoperates with OpenSSL, Schannel, Network.framework and wolfSSL in both
+directions.
 
 The API follows `QuicConnection` and `SslStream`: a connection is made with `ConnectAsync` or
 `AcceptAsync`, configured with `SslClientAuthenticationOptions` or `SslServerAuthenticationOptions`,
@@ -95,6 +97,14 @@ services.AddDtlsClient("webrtc", options =>
 DtlsConnection connection = await factory.ConnectAsync(transport, "webrtc", cancellationToken);
 ```
 
+## Versions
+
+The version is negotiated: a client offers every version in `EnabledProtocols` (DTLS 1.2 and 1.3 by
+default) in one ClientHello, and the server picks the highest both allow. `NegotiatedProtocol` says
+which. A server that allows DTLS 1.3 marks a DTLS 1.2 handshake (RFC 8446 §4.1.3), so a client that
+also allows 1.3 detects an attacker who strips the 1.3 offer and fails rather than falling back.
+Nothing retries with a lower version after a failure: that would undo the protection.
+
 ## Errors
 
 A handshake that fails throws `AuthenticationException` with a `DtlsException` inside, as `SslStream`
@@ -106,26 +116,31 @@ does not finish within `HandshakeTimeout` throws `TimeoutException`. Once connec
 
 | | |
 | --- | --- |
-| Version | DTLS 1.2 |
-| Cipher suites | `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`, `..._AES_256_GCM_SHA384`, `..._CHACHA20_POLY1305_SHA256`, and the `ECDHE_RSA` equivalents |
+| Versions | DTLS 1.2, DTLS 1.3 |
+| DTLS 1.3 cipher suites | `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256` |
+| DTLS 1.2 cipher suites | `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`, `..._AES_256_GCM_SHA384`, `..._CHACHA20_POLY1305_SHA256`, and the `ECDHE_RSA` equivalents |
 | Groups | P-256, P-384 |
-| Signatures | ECDSA with SHA-256 and SHA-384, RSA-PSS, RSA PKCS #1 |
-| Extensions | extended master secret (required by default), `use_srtp`, ALPN, `renegotiation_info` |
-| Not implemented | session resumption, renegotiation (refused), PSK, DTLS 1.0 and 1.3, compression |
+| Signatures | ECDSA with SHA-256 and SHA-384, RSA-PSS, RSA PKCS #1 (DTLS 1.2) |
+| DTLS 1.3 | HelloRetryRequest with cookie, ACKs, KeyUpdate, record number encryption |
+| DTLS 1.2 | extended master secret (required by default), `renegotiation_info`, HelloVerifyRequest cookie |
+| Both | `use_srtp`, ALPN, the keying material exporter |
+| Not implemented | session resumption, PSK, 0-RTT, connection IDs, renegotiation (refused), DTLS 1.0, compression |
 
 ## Interoperability
 
 The tests run handshakes, compare exported keys and exchange data with the platforms' own DTLS
 implementations, in both roles where the peer has them:
 
-| Peer | Dtls.NET as client | Dtls.NET as server | DTLS-SRTP |
-| --- | --- | --- | --- |
-| OpenSSL 3 (Linux, macOS) | yes | yes | yes |
-| Schannel (Windows) | yes | yes | yes |
-| Network.framework (macOS) | yes | yes | not in its API |
-| LibreSSL (macOS) | | yes, with `RequireExtendedMasterSecret` off | yes |
+| Peer | Versions | Dtls.NET as client | Dtls.NET as server | DTLS-SRTP |
+| --- | --- | --- | --- | --- |
+| wolfSSL 5.9 (Linux) | 1.3, 1.2, and either | yes | yes | yes |
+| OpenSSL 3 (Linux, macOS) | 1.2 | yes | yes | yes |
+| Schannel (Windows) | 1.2 | yes | yes | yes |
+| Network.framework (macOS) | 1.2 | yes | yes | not in its API |
+| LibreSSL (macOS) | 1.2 | | yes, with `RequireExtendedMasterSecret` off | yes |
 
-LibreSSL has no extended master secret, which Dtls.NET requires by default.
+Against a peer that speaks only DTLS 1.2, Dtls.NET's default settings negotiate 1.2. LibreSSL has no
+extended master secret, which Dtls.NET requires by default.
 
 ## Building
 

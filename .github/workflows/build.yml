@@ -63,6 +63,17 @@ jobs:
       - name: OpenSSL version
         run: openssl version
 
+      # wolfSSL's example client and server are the DTLS 1.3 peer: few implementations speak it.
+      - name: Build wolfSSL
+        if: runner.os == 'Linux'
+        run: |
+          git clone --depth 1 --branch v5.9.4-stable https://github.com/wolfSSL/wolfssl.git "$RUNNER_TEMP/wolfssl"
+          cd "$RUNNER_TEMP/wolfssl"
+          ./autogen.sh
+          ./configure --enable-dtls --enable-dtls13 --enable-srtp --enable-dtls-frag-ch --enable-keying-material --enable-opensslextra
+          make -j"$(nproc)"
+          echo "DTLS_WOLFSSL_EXAMPLES=$RUNNER_TEMP/wolfssl/examples" >> "$GITHUB_ENV"
+
       - name: Test
         run: >-
           dotnet test --solution Dtls.NET.slnx --no-build -c Release

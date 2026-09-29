@@ -13,8 +13,8 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <EnablePackageValidation>true</EnablePackageValidation>
     <PackageId>Dtls.NET</PackageId>
-    <Description>DTLS 1.2 for .NET on the platform's own cryptography: a sans-IO protocol engine with DTLS-SRTP (use_srtp and the keying material exporter) for WebRTC, self-signed certificates and fingerprint authentication, cookie exchange, fragmentation, retransmission and replay protection. No native dependencies. Native AOT compatible.</Description>
-    <PackageTags>dtls;dtls-srtp;srtp;webrtc;tls;udp;security;cryptography;sans-io;nativeaot</PackageTags>
+    <Description>DTLS 1.2 and 1.3 for .NET on the platform's own cryptography: a sans-IO protocol engine with version negotiation and DTLS-SRTP (use_srtp and the keying material exporter) for WebRTC, self-signed certificates and fingerprint authentication, cookie exchange, fragmentation, retransmission and replay protection. No native dependencies. Native AOT compatible.</Description>
+    <PackageTags>dtls;dtls13;dtls-srtp;srtp;webrtc;tls;udp;security;cryptography;sans-io;nativeaot</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
   <ItemGroup>
