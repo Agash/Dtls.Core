@@ -1,12 +1,15 @@
 namespace Dtls.NET.Records;
 
-// A record's content type (RFC 5246 §6.2.1).
+// A record's content type (RFC 5246 §6.2.1, RFC 9147 §7).
 internal enum ContentType : byte
 {
     ChangeCipherSpec = 20,
     Alert = 21,
     Handshake = 22,
     ApplicationData = 23,
+
+    // DTLS 1.3 (RFC 9147 §7).
+    Ack = 26,
 }
 
 // The DTLS version numbers, the one's complement of the TLS numbers they correspond to (RFC 6347

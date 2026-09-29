@@ -277,7 +277,7 @@ internal sealed class Flight
         {
             if (entry.Message is not { } message)
             {
-                records.Write(ContentType.ChangeCipherSpec, entry.Epoch, [1]);
+                _ = records.Write(ContentType.ChangeCipherSpec, entry.Epoch, [1]);
                 continue;
             }
 
@@ -306,7 +306,7 @@ internal sealed class Flight
                     count
                 );
                 scratch.WriteBytes(message.Body.AsSpan(offset, count));
-                records.Write(ContentType.Handshake, entry.Epoch, scratch.Written);
+                _ = records.Write(ContentType.Handshake, entry.Epoch, scratch.Written);
                 offset += count;
             } while (offset < message.Body.Length);
         }

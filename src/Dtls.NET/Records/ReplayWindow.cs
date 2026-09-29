@@ -11,6 +11,9 @@ internal struct ReplayWindow
     private ulong _seen;
     private bool _any;
 
+    // One past the highest sequence number seen: where a DTLS 1.3 sequence number is reconstructed from.
+    public readonly ulong NextExpected => _any ? _highest + 1 : 0;
+
     public readonly bool IsFresh(ulong sequence)
     {
         if (!_any || sequence > _highest)

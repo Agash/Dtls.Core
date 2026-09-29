@@ -205,7 +205,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
             );
         }
 
-        _records.Write(ContentType.ApplicationData, _records.WriteEpoch, data);
+        _ = _records.Write(ContentType.ApplicationData, _records.WriteEpoch, data);
         _records.Flush();
     }
 
@@ -487,7 +487,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
     private void SendAlert(DtlsAlert alert, bool fatal)
     {
         ReadOnlySpan<byte> payload = [fatal ? FatalLevel : WarningLevel, (byte)alert];
-        _records.Write(ContentType.Alert, _records.WriteEpoch, payload);
+        _ = _records.Write(ContentType.Alert, _records.WriteEpoch, payload);
         _records.Flush();
     }
 
