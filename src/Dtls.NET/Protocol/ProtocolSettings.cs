@@ -10,7 +10,12 @@ namespace Dtls.NET.Protocol;
 // Everything the protocol engine needs, resolved once from a client's or a server's options.
 internal sealed class ProtocolSettings : IDisposable
 {
-    private ProtocolSettings(DtlsConnectionOptions options, DtlsRole role)
+    private ProtocolSettings(
+        DtlsConnectionOptions options,
+        DtlsRole role,
+        ILoggerFactory? defaultLoggerFactory,
+        TimeProvider? defaultTimeProvider
+    )
     {
         Role = role;
         MaximumDatagramSize = options.MaximumDatagramSize;
@@ -19,8 +24,8 @@ internal sealed class ProtocolSettings : IDisposable
         MaximumHandshakeMessageSize = options.MaximumHandshakeMessageSize;
         RequireExtendedMasterSecret = options.RequireExtendedMasterSecret;
         SrtpProfiles = [.. options.SrtpProtectionProfiles.Distinct()];
-        TimeProvider = options.TimeProvider ?? TimeProvider.System;
-        LoggerFactory = options.LoggerFactory ?? NullLoggerFactory.Instance;
+        TimeProvider = options.TimeProvider ?? defaultTimeProvider ?? TimeProvider.System;
+        LoggerFactory = options.LoggerFactory ?? defaultLoggerFactory ?? NullLoggerFactory.Instance;
     }
 
     public DtlsRole Role { get; }
@@ -53,7 +58,12 @@ internal sealed class ProtocolSettings : IDisposable
 
     public ILoggerFactory LoggerFactory { get; }
 
-    public static ProtocolSettings ForClient(DtlsClientConnectionOptions options)
+    // The defaults are the application's services, for what the options leave unset.
+    public static ProtocolSettings ForClient(
+        DtlsClientConnectionOptions options,
+        ILoggerFactory? defaultLoggerFactory = null,
+        TimeProvider? defaultTimeProvider = null
+    )
     {
         options.Validate();
         SslClientAuthenticationOptions ssl = options.ClientAuthenticationOptions;
@@ -62,7 +72,12 @@ internal sealed class ProtocolSettings : IDisposable
             FirstWithKey(ssl.ClientCertificates)
         );
 
-        return new ProtocolSettings(options, DtlsRole.Client)
+        return new ProtocolSettings(
+            options,
+            DtlsRole.Client,
+            defaultLoggerFactory,
+            defaultTimeProvider
+        )
         {
             Credential = credential,
             CipherSuites = Usable(Requested(options), credential, client: true),
@@ -77,7 +92,11 @@ internal sealed class ProtocolSettings : IDisposable
         };
     }
 
-    public static ProtocolSettings ForServer(DtlsServerConnectionOptions options)
+    public static ProtocolSettings ForServer(
+        DtlsServerConnectionOptions options,
+        ILoggerFactory? defaultLoggerFactory = null,
+        TimeProvider? defaultTimeProvider = null
+    )
     {
         options.Validate();
         SslServerAuthenticationOptions ssl = options.ServerAuthenticationOptions;
@@ -86,7 +105,12 @@ internal sealed class ProtocolSettings : IDisposable
             ssl.ServerCertificate
         )!;
 
-        return new ProtocolSettings(options, DtlsRole.Server)
+        return new ProtocolSettings(
+            options,
+            DtlsRole.Server,
+            defaultLoggerFactory,
+            defaultTimeProvider
+        )
         {
             Credential = credential,
             CipherSuites = Usable(Requested(options), credential, client: false),

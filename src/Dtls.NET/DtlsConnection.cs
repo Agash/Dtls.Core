@@ -298,7 +298,7 @@ public sealed class DtlsConnection : IAsyncDisposable
         _settings.Dispose();
     }
 
-    private static async ValueTask<DtlsConnection> StartAsync(
+    internal static async ValueTask<DtlsConnection> StartAsync(
         IDatagramTransport transport,
         ProtocolSettings settings,
         CancellationToken cancellationToken
