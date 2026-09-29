@@ -97,6 +97,13 @@ services.AddDtlsClient("webrtc", options =>
 DtlsConnection connection = await factory.ConnectAsync(transport, "webrtc", cancellationToken);
 ```
 
+## Statistics and metrics
+
+`DtlsConnection.Statistics` counts datagrams, dropped records, authentication failures, retransmissions
+and application data per connection. The meter `Dtls.NET` (for `dotnet-counters` or OpenTelemetry's
+`AddMeter("Dtls.NET")`) records `dtls.handshake.duration` by version, role and outcome, and counts
+retransmissions and dropped records. Nothing secret is logged or measured.
+
 ## Versions
 
 The version is negotiated: a client offers every version in `EnabledProtocols` (DTLS 1.2 and 1.3 by
@@ -141,6 +148,11 @@ implementations, in both roles where the peer has them:
 
 Against a peer that speaks only DTLS 1.2, Dtls.NET's default settings negotiate 1.2. LibreSSL has no
 extended master secret, which Dtls.NET requires by default.
+
+## Protocol support
+
+What is and is not implemented, the invariants the tests hold the implementation to, and how a
+connection closes: [docs/protocol-support.md](docs/protocol-support.md).
 
 ## Building
 
