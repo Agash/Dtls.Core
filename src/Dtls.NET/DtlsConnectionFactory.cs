@@ -21,6 +21,9 @@ namespace Dtls.NET;
 /// <param name="serverOptions">The configured server options.</param>
 /// <param name="loggerFactory">Where connections log when their options name no logger factory.</param>
 /// <param name="timeProvider">The clock connections run on when their options name none.</param>
+// RS0026 (several overloads with an optional CancellationToken): the overloads differ in their
+// required parameters, name or options, as the framework's own do, and ship together.
+#pragma warning disable RS0026
 public sealed class DtlsConnectionFactory(
     IOptionsMonitor<DtlsClientConnectionOptions> clientOptions,
     IOptionsMonitor<DtlsServerConnectionOptions> serverOptions,
@@ -106,3 +109,4 @@ public sealed class DtlsConnectionFactory(
         );
     }
 }
+#pragma warning restore RS0026
