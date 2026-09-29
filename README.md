@@ -80,6 +80,21 @@ application reads; `ReceiveAsync` returns 0 once the peer has closed the connect
 `ExportKeyingMaterial` is the RFC 5705 exporter, for protocols that derive their own keys from the
 handshake.
 
+## Dependency injection
+
+`AddDtls` registers a `DtlsConnectionFactory`, which makes connections that log through the
+application's `ILoggerFactory` and run on its `TimeProvider`. Options can be configured once by name:
+
+```csharp
+services.AddDtlsClient("webrtc", options =>
+{
+    options.ClientAuthenticationOptions = new SslClientAuthenticationOptions { ... };
+    options.SrtpProtectionProfiles = [SrtpProtectionProfile.AeadAes128Gcm];
+});
+
+DtlsConnection connection = await factory.ConnectAsync(transport, "webrtc", cancellationToken);
+```
+
 ## Errors
 
 A handshake that fails throws `AuthenticationException` with a `DtlsException` inside, as `SslStream`
@@ -97,6 +112,20 @@ does not finish within `HandshakeTimeout` throws `TimeoutException`. Once connec
 | Signatures | ECDSA with SHA-256 and SHA-384, RSA-PSS, RSA PKCS #1 |
 | Extensions | extended master secret (required by default), `use_srtp`, ALPN, `renegotiation_info` |
 | Not implemented | session resumption, renegotiation (refused), PSK, DTLS 1.0 and 1.3, compression |
+
+## Interoperability
+
+The tests run handshakes, compare exported keys and exchange data with the platforms' own DTLS
+implementations, in both roles where the peer has them:
+
+| Peer | Dtls.NET as client | Dtls.NET as server | DTLS-SRTP |
+| --- | --- | --- | --- |
+| OpenSSL 3 (Linux, macOS) | yes | yes | yes |
+| Schannel (Windows) | yes | yes | yes |
+| Network.framework (macOS) | yes | yes | not in its API |
+| LibreSSL (macOS) | | yes, with `RequireExtendedMasterSecret` off | yes |
+
+LibreSSL has no extended master secret, which Dtls.NET requires by default.
 
 ## Building
 

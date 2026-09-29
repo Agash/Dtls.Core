@@ -28,10 +28,16 @@ local checkouts of these and the RFCs for reference.
 
 ## Tests
 
-`HandshakeTests` run both sides in memory, including over a path that loses datagrams.
-`OpenSslInteropTests` run OpenSSL's `s_server` and `s_client` against Dtls.NET and compare the keying
-material both export; they need `openssl` on the `PATH`. On Windows the `s_server` cases are
-inconclusive, because the Windows builds of `s_server` do not serve DTLS when stdin is a pipe.
+`HandshakeTests` run both sides in memory, including over a path that loses datagrams. The interop
+tests run each platform's own DTLS against Dtls.NET and compare the keying material both export:
+
+- `OpenSslInteropTests`: OpenSSL's `s_server` and `s_client` (`DTLS_OPENSSL` names the binary; on
+  macOS Homebrew's `openssl@3` is used, since `/usr/bin/openssl` is LibreSSL, which has its own test).
+  On Windows the `s_server` cases are inconclusive: the Windows builds of `s_server` do not serve DTLS
+  when stdin is a pipe.
+- `SchannelInteropTests`: Schannel through SSPI (`SchannelPeer`), on Windows.
+- `NetworkFrameworkInteropTests`: Network.framework through `tests/NetworkFrameworkPeer/peer.swift`, run
+  with `swift` on macOS.
 
 ## Pull requests
 

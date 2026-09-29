@@ -1,6 +1,6 @@
-using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -18,6 +18,21 @@ public sealed partial class OpenSslInteropTests
     private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(30);
 
     public TestContext TestContext { get; set; } = null!;
+
+    // OpenSSL itself: DTLS_OPENSSL when set, Homebrew's on macOS (whose /usr/bin/openssl is LibreSSL), and
+    // the PATH's otherwise.
+    internal static string OpenSsl { get; } =
+        Environment.GetEnvironmentVariable("DTLS_OPENSSL")
+        ?? (
+            OperatingSystem.IsMacOS()
+                ? new[]
+                {
+                    "/opt/homebrew/opt/openssl@3/bin/openssl",
+                    "/usr/local/opt/openssl@3/bin/openssl",
+                }.FirstOrDefault(File.Exists)
+                : null
+        )
+        ?? "openssl";
 
     [TestMethod]
     [DataRow(DtlsKeyType.EcdsaP256, "ECDHE-ECDSA-AES128-GCM-SHA256", true)]
@@ -41,7 +56,8 @@ public sealed partial class OpenSslInteropTests
         using X509Certificate2 peer = DtlsCertificates.CreateSelfSigned(keyType);
         using TempPem pem = new(peer);
         int port = FreePort();
-        using OpenSsl server = OpenSsl.Start(
+        using PeerProcess server = PeerProcess.Start(
+            OpenSsl,
             $"s_server -dtls1_2 -accept 127.0.0.1:{port} -cert {pem.Certificate} -key {pem.Key} -cipher {cipher} "
                 + $"-use_srtp SRTP_AEAD_AES_128_GCM:SRTP_AES128_CM_SHA1_80 -keymatexport EXTRACTOR-dtls_srtp -keymatexportlen {KeyingMaterialLength} "
                 + $"-Verify 1 -mtu {(smallDatagrams ? 300 : 1400)}"
@@ -62,7 +78,7 @@ public sealed partial class OpenSslInteropTests
         X509Certificate2 peer,
         int port,
         bool smallDatagrams,
-        OpenSsl server
+        PeerProcess server
     )
     {
         using UdpDatagramTransport transport = UdpDatagramTransport.Connect(
@@ -102,7 +118,8 @@ public sealed partial class OpenSslInteropTests
         using X509Certificate2 peer = DtlsCertificates.CreateSelfSigned(keyType);
         using TempPem pem = new(peer);
         using ListeningTransport transport = new();
-        using OpenSsl client = OpenSsl.Start(
+        using PeerProcess client = PeerProcess.Start(
+            OpenSsl,
             $"s_client -dtls1_2 -connect 127.0.0.1:{transport.Port} -cert {pem.Certificate} -key {pem.Key} "
                 + $"-use_srtp SRTP_AES128_CM_SHA1_80 -keymatexport EXTRACTOR-dtls_srtp -keymatexportlen {KeyingMaterialLength}"
         );
@@ -116,15 +133,73 @@ public sealed partial class OpenSslInteropTests
         }
     }
 
+    // macOS ships LibreSSL as /usr/bin/openssl. It has no extended master secret, which Dtls.NET requires
+    // by default: the default refuses it, and a server that allows the older derivation interoperates.
+    [TestMethod]
+    public async Task Accept_FromLibreSslClient_NeedsTheOlderMasterSecretAllowed()
+    {
+        const string libreSsl = "/usr/bin/openssl";
+        if (!OperatingSystem.IsMacOS() || !File.Exists(libreSsl))
+        {
+            Assert.Inconclusive("LibreSSL is the macOS system openssl.");
+        }
+
+        using X509Certificate2 own = DtlsCertificates.CreateSelfSigned();
+        using X509Certificate2 peer = DtlsCertificates.CreateSelfSigned();
+        using TempPem pem = new(peer);
+        string arguments(int port) =>
+            $"s_client -dtls1_2 -connect 127.0.0.1:{port} -cert {pem.Certificate} -key {pem.Key} "
+            + $"-use_srtp SRTP_AES128_CM_SHA1_80 -keymatexport EXTRACTOR-dtls_srtp -keymatexportlen {KeyingMaterialLength}";
+
+        using (ListeningTransport refusing = new())
+        using (PeerProcess client = PeerProcess.Start(libreSsl, arguments(refusing.Port)))
+        {
+            AuthenticationException error =
+                await Assert.ThrowsExactlyAsync<AuthenticationException>(() =>
+                    DtlsConnection
+                        .AcceptAsync(
+                            refusing,
+                            HandshakeTests.Server(own, peer, cookieExchange: true),
+                            TestContext.CancellationToken
+                        )
+                        .AsTask()
+                );
+            Assert.AreEqual(
+                DtlsAlert.HandshakeFailure,
+                ((DtlsException)error.InnerException!).Alert
+            );
+        }
+
+        using ListeningTransport transport = new();
+        using PeerProcess libre = PeerProcess.Start(libreSsl, arguments(transport.Port));
+        try
+        {
+            await AcceptAsync(
+                own,
+                peer,
+                transport,
+                cookieExchange: true,
+                libre,
+                requireExtendedMasterSecret: false
+            );
+        }
+        catch (Exception error) when (error is not AssertFailedException)
+        {
+            Assert.Fail($"{error}\nlibressl:\n{libre.Output}");
+        }
+    }
+
     private async Task AcceptAsync(
         X509Certificate2 own,
         X509Certificate2 peer,
         ListeningTransport transport,
         bool cookieExchange,
-        OpenSsl client
+        PeerProcess client,
+        bool requireExtendedMasterSecret = true
     )
     {
         DtlsServerConnectionOptions options = HandshakeTests.Server(own, peer, cookieExchange);
+        options.RequireExtendedMasterSecret = requireExtendedMasterSecret;
         await using DtlsConnection connection = await DtlsConnection
             .AcceptAsync(transport, options, TestContext.CancellationToken)
             .AsTask()
@@ -194,146 +269,5 @@ public sealed partial class OpenSslInteropTests
             File.Delete(Certificate);
             File.Delete(Key);
         }
-    }
-
-    // An openssl process whose output is watched line by line.
-    private sealed class OpenSsl : IDisposable
-    {
-        private readonly Process _process;
-        private readonly StringBuilder _output = new();
-
-        private OpenSsl(Process process) => _process = process;
-
-        public static OpenSsl Start(string arguments)
-        {
-            ProcessStartInfo start = new("openssl", arguments)
-            {
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            };
-            Process process;
-            try
-            {
-                process = Process.Start(start)!;
-            }
-            catch (System.ComponentModel.Win32Exception)
-            {
-                Assert.Inconclusive("openssl is not on the PATH.");
-                throw;
-            }
-
-            OpenSsl openSsl = new(process);
-            process.OutputDataReceived += (_, e) => openSsl.Append(e.Data);
-            process.ErrorDataReceived += (_, e) => openSsl.Append(e.Data);
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-            return openSsl;
-        }
-
-        public string Output
-        {
-            get
-            {
-                lock (_output)
-                {
-                    return _output.ToString();
-                }
-            }
-        }
-
-        public Task WriteLineAsync(string line) => _process.StandardInput.WriteLineAsync(line);
-
-        public Task<string> WaitForAsync(string text, CancellationToken cancellationToken) =>
-            WaitForAsync(new Regex(Regex.Escape(text)), cancellationToken);
-
-        public async Task<string> WaitForAsync(Regex pattern, CancellationToken cancellationToken)
-        {
-            long deadline =
-                Stopwatch.GetTimestamp() + (long)(s_timeout.TotalSeconds * Stopwatch.Frequency);
-            while (Stopwatch.GetTimestamp() < deadline)
-            {
-                string output;
-                lock (_output)
-                {
-                    output = _output.ToString();
-                }
-
-                Match match = pattern.Match(output);
-                if (match.Success)
-                {
-                    return match.Groups.Count > 1 ? match.Groups[1].Value : match.Value;
-                }
-
-                await Task.Delay(50, cancellationToken);
-            }
-
-            lock (_output)
-            {
-                Assert.Fail($"openssl did not print {pattern}. Its output:\n{_output}");
-            }
-
-            return "";
-        }
-
-        public void Dispose()
-        {
-            if (!_process.HasExited)
-            {
-                _process.Kill();
-                _process.WaitForExit();
-            }
-
-            _process.Dispose();
-        }
-
-        private void Append(string? line)
-        {
-            if (line is not null)
-            {
-                lock (_output)
-                {
-                    _ = _output.AppendLine(line);
-                }
-            }
-        }
-    }
-
-    // A server's UDP socket that learns its peer from the first datagram, as a listener does.
-    private sealed class ListeningTransport : IDatagramTransport, IDisposable
-    {
-        private readonly Socket _socket = new(
-            AddressFamily.InterNetwork,
-            SocketType.Dgram,
-            ProtocolType.Udp
-        );
-        private EndPoint? _peer;
-
-        public ListeningTransport() => _socket.Bind(new IPEndPoint(IPAddress.Loopback, 0));
-
-        public int Port => ((IPEndPoint)_socket.LocalEndPoint!).Port;
-
-        public async ValueTask SendAsync(
-            ReadOnlyMemory<byte> datagram,
-            CancellationToken cancellationToken
-        ) => _ = await _socket.SendToAsync(datagram, SocketFlags.None, _peer!, cancellationToken);
-
-        public async ValueTask<int> ReceiveAsync(
-            Memory<byte> buffer,
-            CancellationToken cancellationToken
-        )
-        {
-            SocketReceiveFromResult result = await _socket.ReceiveFromAsync(
-                buffer,
-                SocketFlags.None,
-                new IPEndPoint(IPAddress.Any, 0),
-                cancellationToken
-            );
-            _peer ??= result.RemoteEndPoint;
-            return result.ReceivedBytes;
-        }
-
-        public void Dispose() => _socket.Dispose();
     }
 }
