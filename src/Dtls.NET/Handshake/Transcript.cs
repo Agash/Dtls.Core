@@ -15,6 +15,11 @@ internal sealed class Transcript : IDisposable
 
     public ReadOnlySpan<byte> Bytes => _buffer.AsSpan(0, _length);
 
+    public int Length => _length;
+
+    // Goes back to an earlier length, undoing the messages added since.
+    public void Truncate(int length) => _length = Math.Min(_length, length);
+
     public void Add(HandshakeMessage message)
     {
         Ensure(HandshakeFragment.HeaderSize + message.Body.Length);

@@ -30,7 +30,7 @@ internal sealed class RemoteCertificateValidator(
         }
         catch (CryptographicException error)
         {
-            throw DtlsException.BadCertificate($"it could not be read ({error.Message})");
+            throw DtlsException.CorruptCertificate($"it could not be read ({error.Message})");
         }
 
         SslPolicyErrors errors = SslPolicyErrors.None;
@@ -90,7 +90,9 @@ internal sealed class RemoteCertificateValidator(
         catch (CryptographicException error)
         {
             certificate.Dispose();
-            throw DtlsException.BadCertificate($"its chain could not be read ({error.Message})");
+            throw DtlsException.CorruptCertificate(
+                $"its chain could not be read ({error.Message})"
+            );
         }
         finally
         {

@@ -67,6 +67,18 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
     private int _refusedRenegotiation = -1;
     private bool _closeNotifySent;
 
+    // The last unauthenticated message refused, reported if the handshake then runs out of time.
+    private DtlsException? _refused;
+
+    private long _datagramsSent;
+    private long _datagramsReceived;
+    private long _retransmissions;
+    private long _applicationSent;
+    private long _applicationReceived;
+    private long _dropsReported;
+    private long _handshakeStarted;
+    private TimeSpan? _handshakeDuration;
+
     // Where the handshake is: the message expected next.
     private enum Step
     {
@@ -83,7 +95,6 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
         Done,
 
         // DTLS 1.3.
-        SecondClientHello,
         EncryptedExtensions,
         CertificateRequestOrCertificate,
         ServerCertificateVerify,
@@ -128,6 +139,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
     {
         long now = _time.GetTimestamp();
         _handshakeDeadline = now + Ticks(_settings.HandshakeTimeout);
+        _handshakeStarted = now;
         LogStarting(Role);
         Guard(() =>
         {
@@ -149,12 +161,28 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
 
         try
         {
+            _datagramsReceived++;
             RecordDispatcher dispatcher = new(this, applicationData);
             _records.Read(datagram, ref dispatcher);
+            ReportDrops();
+            if (_records.IntegrityLimitReached)
+            {
+                Fail(
+                    new DtlsException(
+                        DtlsAlert.InternalError,
+                        isRemote: false,
+                        "Too many records failed to authenticate under one key (RFC 9147 §4.5.3)."
+                    ),
+                    sendAlert: false
+                );
+                return;
+            }
+
             if (_reassembler.TakePreviousFlightRetransmitted())
             {
                 // The peer sent its last flight again whole: it has not seen this side's answer.
                 LogAnsweringRetransmission();
+                CountRetransmission();
                 Transmit(_flight);
             }
         }
@@ -177,6 +205,13 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
         if (State == ProtocolState.Handshaking && now >= _handshakeDeadline)
         {
             LogHandshakeTimedOut(_settings.HandshakeTimeout);
+            if (_refused is { } refused)
+            {
+                // What the handshake last refused explains the timeout better than the timeout does.
+                Fail(refused, sendAlert: true);
+                return;
+            }
+
             Fail(
                 new TimeoutException(
                     $"The DTLS handshake did not complete within {_settings.HandshakeTimeout}."
@@ -192,6 +227,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
                 Math.Min(_timeout.Ticks * 2, s_maximumRetransmissionTimeout.Ticks)
             );
             LogRetransmitting(_timeout);
+            CountRetransmission();
             Guard(() => Transmit(_flight));
             _retransmitAt = now + Ticks(_timeout);
         }
@@ -220,9 +256,37 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
 
         _ = _records.Write(ContentType.ApplicationData, _records.WriteEpoch, data);
         _records.Flush();
+        _applicationSent++;
     }
 
-    public bool TryDequeue(out OutgoingDatagram datagram) => _records.TryDequeue(out datagram);
+    public bool TryDequeue(out OutgoingDatagram datagram)
+    {
+        if (!_records.TryDequeue(out datagram))
+        {
+            return false;
+        }
+
+        _datagramsSent++;
+        return true;
+    }
+
+    public DtlsConnectionStatistics Statistics =>
+        new(
+            _datagramsSent,
+            _datagramsReceived,
+            _records.Dropped,
+            _records.AuthenticationFailures,
+            _retransmissions,
+            _applicationSent,
+            _applicationReceived,
+            ApplicationRecordsDropped: 0,
+            _handshakeDuration
+        );
+
+    // The path MTU changed, as when ICE moves to another candidate pair.
+    public int MaximumDatagramSize => _records.MaximumDatagram;
+
+    public void SetMaximumDatagramSize(int size) => _records.SetMaximumDatagram(size);
 
     // Closes the connection, telling the peer with close_notify.
     public void Close()
@@ -341,6 +405,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
                     && State == ProtocolState.Connected
                     && !payload.IsEmpty:
                 applicationData.Add(new Range(offset, offset + payload.Length));
+                _applicationReceived++;
                 break;
             default:
                 // Application data before the handshake completes cannot yet be authenticated as the
@@ -370,6 +435,17 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
                 {
                     break;
                 }
+
+                // After the handshake, epoch 2 carries only retransmissions of the handshake: a new
+                // post-handshake message must come under the application keys (RFC 9147 §6.1).
+                if (
+                    State == ProtocolState.Connected
+                    && epoch < ApplicationEpoch
+                    && fragment.MessageSeq >= _reassembler.Next
+                )
+                {
+                    break;
+                }
             }
             else
             {
@@ -387,7 +463,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
                 }
             }
 
-            used |= _reassembler.Add(fragment);
+            used |= _reassembler.Add(fragment, authenticated: encrypted);
         }
 
         while (_reassembler.TryDequeue(out HandshakeMessage message))
@@ -403,17 +479,13 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
                 continue;
             }
 
-            if (_version == DtlsProtocols.Dtls13)
+            if (encrypted)
             {
-                Receive13(message);
-            }
-            else if (Role == DtlsRole.Client)
-            {
-                ClientReceive(message);
+                Dispatch(message);
             }
             else
             {
-                ServerReceive(message);
+                DispatchUnauthenticated(message);
             }
         }
 
@@ -422,6 +494,62 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
             HandshakeRecordReceived(epoch, recordSequence);
         }
     }
+
+    private void Dispatch(HandshakeMessage message)
+    {
+        if (_version == DtlsProtocols.Dtls13)
+        {
+            Receive13(message);
+        }
+        else if (Role == DtlsRole.Client)
+        {
+            ClientReceive(message);
+        }
+        else
+        {
+            ServerReceive(message);
+        }
+    }
+
+    // A message from unauthenticated records that does not even decode is dropped rather than ending
+    // the handshake: anyone can send one. The handshake goes back to where it was, and the peer's
+    // retransmission of the genuine message is read again (RFC 6347 §4.1.2.7 applied to messages).
+    private void DispatchUnauthenticated(HandshakeMessage message)
+    {
+        Step step = _step;
+        DtlsProtocols version = _version;
+        (ushort Read, ushort Write) epochs = (_records.ReadEpoch, _records.WriteEpoch);
+        int transcript = _transcript.Length;
+        int transcript13 = _transcript13?.Length ?? 0;
+        try
+        {
+            Dispatch(message);
+        }
+        catch (DtlsException error)
+            when (Forgeable(error) && epochs == (_records.ReadEpoch, _records.WriteEpoch))
+        {
+            _step = step;
+            _version = version;
+            _transcript.Truncate(transcript);
+            _transcript13?.Truncate(transcript13);
+            _reassembler.Restart(message.MessageSeq);
+            _refused = error;
+            LogMessageDropped(message.Type, error.Message);
+        }
+    }
+
+    // Faults a forged or corrupted copy of a message can cause. The outcomes of a well-formed
+    // negotiation (no shared version, suite, group or application protocol, or a certificate refused)
+    // still end the handshake at once, as the peer needs to hear.
+    private static bool Forgeable(DtlsException error) =>
+        error.IsMalformed
+        || error.Alert
+            is DtlsAlert.DecodeError
+                or DtlsAlert.UnexpectedMessage
+                or DtlsAlert.IllegalParameter
+                or DtlsAlert.DecryptError
+                or DtlsAlert.UnsupportedExtension
+                or DtlsAlert.MissingExtension;
 
     // A new handshake on a connected connection is a renegotiation, which Dtls.NET does not do; the
     // peer is told once per message with a no_renegotiation warning (RFC 5746 §4.2).
@@ -502,12 +630,23 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
     {
         _scratch.Clear();
         encode(_scratch);
+        // message_seq is 16 bits and must not repeat within the association (RFC 9147 §5.2).
+        if (_sendSequence == ushort.MaxValue)
+        {
+            throw new DtlsException(
+                DtlsAlert.InternalError,
+                isRemote: false,
+                "The handshake message sequence number is exhausted."
+            );
+        }
+
         return new HandshakeMessage(type, _sendSequence++, _scratch.ToArray());
     }
 
     private void Connected()
     {
         State = ProtocolState.Connected;
+        RecordHandshake("connected");
         _step = Step.Done;
         _handshakeDeadline = long.MaxValue;
         if (Role == DtlsRole.Client && _version != DtlsProtocols.Dtls13)
@@ -526,6 +665,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
             CryptographicOperations.ZeroMemory(material);
         }
 
+        ForgetHandshakeSecrets();
         _keyShare?.Dispose();
         _keyShare = null;
         LogConnected(_suite.Suite, _srtpProfile, _remoteCertificate?.Subject);
@@ -564,6 +704,11 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
             SendAlert(alert, fatal: true);
         }
 
+        if (State == ProtocolState.Handshaking)
+        {
+            RecordHandshake(error is TimeoutException ? "timeout" : "failed");
+        }
+
         Error = error;
         State = ProtocolState.Failed;
         StopTimers();
@@ -581,6 +726,46 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
         {
             Fail(error, sendAlert: !error.IsRemote);
         }
+    }
+
+    private void CountRetransmission()
+    {
+        _retransmissions++;
+        DtlsMetrics.Retransmissions.Add(1);
+    }
+
+    private void ReportDrops()
+    {
+        long dropped = _records.Dropped - _dropsReported;
+        if (dropped > 0)
+        {
+            _dropsReported = _records.Dropped;
+            DtlsMetrics.RecordsDropped.Add(dropped);
+        }
+    }
+
+    private void RecordHandshake(string outcome)
+    {
+        TimeSpan duration = _time.GetElapsedTime(_handshakeStarted);
+        if (outcome == "connected")
+        {
+            _handshakeDuration = duration;
+        }
+
+        DtlsMetrics.HandshakeDuration.Record(
+            duration.TotalSeconds,
+            new KeyValuePair<string, object?>(
+                "dtls.protocol.version",
+                _version == DtlsProtocols.Dtls13 ? "1.3"
+                    : _version == DtlsProtocols.Dtls12 ? "1.2"
+                    : null
+            ),
+            new KeyValuePair<string, object?>(
+                "dtls.role",
+                Role == DtlsRole.Client ? "client" : "server"
+            ),
+            new KeyValuePair<string, object?>("dtls.handshake.outcome", outcome)
+        );
     }
 
     private void StopTimers()

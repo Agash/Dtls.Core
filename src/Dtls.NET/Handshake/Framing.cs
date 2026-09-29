@@ -120,7 +120,9 @@ internal sealed class HandshakeReassembler(int maximumMessage)
 
     // Adds a fragment; false when it is not one the handshake can use (ahead of the window, or not
     // matching what earlier fragments of its message said).
-    public bool Add(in HandshakeFragment fragment)
+    // A fragment from an authenticated record that breaks the rules is a protocol error; one from an
+    // unauthenticated record is ignored, so a forged datagram cannot end the handshake.
+    public bool Add(in HandshakeFragment fragment, bool authenticated)
     {
         if (fragment.MessageSeq < Next)
         {
@@ -129,7 +131,7 @@ internal sealed class HandshakeReassembler(int maximumMessage)
                 && previous.Matches(fragment)
             )
             {
-                previous.Fill(fragment.Offset, fragment.Body, keep: false);
+                _ = previous.Fill(fragment.Offset, fragment.Body, keep: false);
                 _previousFlightSeen = true;
             }
 
@@ -143,6 +145,11 @@ internal sealed class HandshakeReassembler(int maximumMessage)
 
         if (fragment.Length > maximumMessage)
         {
+            if (!authenticated)
+            {
+                return false;
+            }
+
             throw new DtlsException(
                 DtlsAlert.HandshakeFailure,
                 isRemote: false,
@@ -157,10 +164,35 @@ internal sealed class HandshakeReassembler(int maximumMessage)
         }
         else if (!partial.Matches(fragment))
         {
-            return false;
+            if (authenticated || partial.IsComplete)
+            {
+                return false;
+            }
+
+            // Two unauthenticated fragments disagree on the message: either may be forged. The newer
+            // one replaces the incomplete older one, so a forgery cannot hold the slot for good; the
+            // genuine message wins once the peer retransmits it.
+            partial = new Assembly(fragment.Type, fragment.Length, keep: true);
+            _partial[fragment.MessageSeq] = partial;
         }
 
-        partial.Fill(fragment.Offset, fragment.Body, keep: true);
+        if (!partial.Fill(fragment.Offset, fragment.Body, keep: true))
+        {
+            // RFC 9147 §5.5: a retransmission may split a message differently but must not change it.
+            if (authenticated)
+            {
+                throw DtlsException.IllegalParameter(
+                    "a handshake fragment contradicts an earlier one"
+                );
+            }
+
+            // Unauthenticated, either may be the forgery: the newer starts the message over, as for a
+            // mismatched type or length.
+            partial = new Assembly(fragment.Type, fragment.Length, keep: true);
+            _partial[fragment.MessageSeq] = partial;
+            _ = partial.Fill(fragment.Offset, fragment.Body, keep: true);
+        }
+
         while (_partial.TryGetValue(Next, out Assembly? next) && next.IsComplete)
         {
             _ = _partial.Remove(Next);
@@ -231,14 +263,24 @@ internal sealed class HandshakeReassembler(int maximumMessage)
         public bool Matches(in HandshakeFragment fragment) =>
             fragment.Type == Type && fragment.Length == Length;
 
-        public void Fill(int offset, ReadOnlySpan<byte> bytes, bool keep)
+        // Adds bytes; false, adding nothing, when they differ from bytes already received there.
+        public bool Fill(int offset, ReadOnlySpan<byte> bytes, bool keep)
         {
+            Span<bool> have = _have.AsSpan(offset, bytes.Length);
             if (keep)
             {
-                bytes.CopyTo(Body.AsSpan(offset));
+                Span<byte> body = Body.AsSpan(offset, bytes.Length);
+                for (int i = 0; i < have.Length; i++)
+                {
+                    if (have[i] && body[i] != bytes[i])
+                    {
+                        return false;
+                    }
+                }
+
+                bytes.CopyTo(body);
             }
 
-            Span<bool> have = _have.AsSpan(offset, bytes.Length);
             for (int i = 0; i < have.Length; i++)
             {
                 if (!have[i])
@@ -247,6 +289,8 @@ internal sealed class HandshakeReassembler(int maximumMessage)
                     _missing--;
                 }
             }
+
+            return true;
         }
 
         public void Reset()

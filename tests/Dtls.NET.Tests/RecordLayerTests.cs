@@ -84,6 +84,52 @@ public sealed class RecordLayerTests
         Assert.IsFalse(records.TryDequeue(out _));
     }
 
+    [TestMethod]
+    public void Write_PastThe48BitSequenceNumber_FailsInsteadOfWrapping()
+    {
+        using RecordLayer records = new(1200);
+        records.AdvanceSequence(0, (1UL << 48) - 1);
+        Assert.AreEqual((1UL << 48) - 1, records.Write(ContentType.Handshake, 0, [1]));
+
+        DtlsException error = Assert.ThrowsExactly<DtlsException>(() =>
+            records.Write(ContentType.Handshake, 0, [1])
+        );
+        Assert.AreEqual(DtlsAlert.InternalError, error.Alert);
+    }
+
+    [TestMethod]
+    public void NextEpoch_AtTheLast_FailsInsteadOfWrapping() =>
+        Assert.ThrowsExactly<DtlsException>(() => RecordLayer.NextEpoch(ushort.MaxValue));
+
+    [TestMethod]
+    public void Read_TamperedRecord_LeavesTheReplayWindowAlone()
+    {
+        Assert.IsTrue(
+            CipherSuiteInfo.TryGet(
+                TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                out CipherSuiteInfo info
+            )
+        );
+        (RecordLayer sender, RecordLayer receiver) = Pair(info);
+        using (sender)
+        using (receiver)
+        {
+            _ = sender.Write(ContentType.ApplicationData, 1, [1, 2, 3]);
+            byte[] genuine = Take(sender);
+            byte[] tampered = [.. genuine];
+            tampered[^1] ^= 1;
+
+            Collector first = new(tampered);
+            receiver.Read(tampered, ref first);
+            Collector second = new(genuine);
+            receiver.Read(genuine, ref second);
+
+            // The forgery with the same sequence number did not mark it seen.
+            Assert.IsEmpty(first.Payloads);
+            Assert.HasCount(1, second.Payloads);
+        }
+    }
+
     private static byte[] Take(RecordLayer records)
     {
         Assert.IsTrue(records.TryDequeue(out OutgoingDatagram datagram));

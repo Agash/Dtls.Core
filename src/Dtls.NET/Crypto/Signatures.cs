@@ -118,7 +118,8 @@ internal static class Signatures
                 }
             }
         }
-        catch (CryptographicException)
+        catch (Exception error)
+            when (error is CryptographicException or PlatformNotSupportedException)
         {
             // Deliberately not logged here: a malformed signature is a failed verification, which the
             // handshake turns into a decrypt_error alert and logs.

@@ -78,4 +78,18 @@ internal sealed partial class DtlsProtocol
         "The server accepts no signature this side's certificate makes; answering its request without one"
     )]
     private partial void LogClientCertificateUnusable();
+
+    [LoggerMessage(
+        16,
+        LogLevel.Debug,
+        "Dropped an unauthenticated {Type} that could not be read: {Reason}"
+    )]
+    private partial void LogMessageDropped(HandshakeType type, string reason);
+
+    [LoggerMessage(
+        17,
+        LogLevel.Debug,
+        "Refused a ClientHello whose cookie this server did not make"
+    )]
+    private partial void LogCookieRefused();
 }

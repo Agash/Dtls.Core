@@ -37,6 +37,15 @@ internal sealed partial class DtlsProtocol
     // For tests: updates this side's sending keys, asking the peer to update theirs too.
     internal void RequestKeyUpdate() => SendKeyUpdate(requestUpdate: true);
 
+    internal (ushort Read, ushort Write) Epochs => (_records.ReadEpoch, _records.WriteEpoch);
+
+    internal void SendHandshakeForTest(ushort epoch, byte type, byte[] body)
+    {
+        Flight flight = new();
+        flight.AddMessage(epoch, NewMessage((HandshakeType)type, w => w.WriteBytes(body)));
+        Transmit(flight);
+    }
+
     private void Receive13(HandshakeMessage message)
     {
         if (Role == DtlsRole.Client)
@@ -161,6 +170,9 @@ internal sealed partial class DtlsProtocol
             State != ProtocolState.Connected
             || _version != DtlsProtocols.Dtls13
             || _keyUpdate is not null
+            // Epochs are 16 bits here: at the last one this side stops updating, which RFC 9147 §8
+            // allows in answer to update_requested.
+            || _records.WriteEpoch == ushort.MaxValue
         )
         {
             return;
@@ -185,7 +197,7 @@ internal sealed partial class DtlsProtocol
         byte[] next = KeySchedule13.NextTrafficSecret(_suite.PrfHash, Prefix, _readTrafficSecret);
         CryptographicOperations.ZeroMemory(_readTrafficSecret);
         _readTrafficSecret = next;
-        ushort epoch = checked((ushort)(_records.ReadEpoch + 1));
+        ushort epoch = RecordLayer.NextEpoch(_records.ReadEpoch);
         _records.InstallRead(epoch, Cipher(next));
         LogReadEpoch(epoch);
     }
@@ -195,7 +207,7 @@ internal sealed partial class DtlsProtocol
         byte[] next = KeySchedule13.NextTrafficSecret(_suite.PrfHash, Prefix, _writeTrafficSecret);
         CryptographicOperations.ZeroMemory(_writeTrafficSecret);
         _writeTrafficSecret = next;
-        _records.InstallWrite(checked((ushort)(_records.WriteEpoch + 1)), Cipher(next));
+        _records.InstallWrite(RecordLayer.NextEpoch(_records.WriteEpoch), Cipher(next));
     }
 
     private RecordCipher13 Cipher(ReadOnlySpan<byte> trafficSecret)
@@ -331,6 +343,24 @@ internal sealed partial class DtlsProtocol
         }
 
         return extensions;
+    }
+
+    // The handshake traffic secrets only compute the Finished messages; the epoch-2 keys that
+    // retransmission still needs live in the record layer.
+    private void ForgetHandshakeSecrets()
+    {
+        foreach (byte[]? secret in (byte[]?[])[_clientHandshakeSecret, _serverHandshakeSecret])
+        {
+            if (secret is not null)
+            {
+                CryptographicOperations.ZeroMemory(secret);
+            }
+        }
+
+        _clientHandshakeSecret = null;
+        _serverHandshakeSecret = null;
+        _keyShare13?.Dispose();
+        _keyShare13 = null;
     }
 
     private void Dispose13()

@@ -75,7 +75,10 @@ internal sealed class KeyShare : IDisposable
             using ECDiffieHellman peer = ECDiffieHellman.Create(parameters);
             return _key.DeriveRawSecretAgreement(peer.PublicKey);
         }
-        catch (CryptographicException error)
+        // Windows reports a point off the curve as PlatformNotSupportedException, the others as
+        // CryptographicException.
+        catch (Exception error)
+            when (error is CryptographicException or PlatformNotSupportedException)
         {
             throw new DtlsException(
                 DtlsAlert.IllegalParameter,

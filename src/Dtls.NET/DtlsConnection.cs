@@ -30,7 +30,6 @@ namespace Dtls.NET;
 public sealed class DtlsConnection : IAsyncDisposable
 {
     private const int ReceiveBufferSize = 65535;
-    private const int ReceiveQueueCapacity = 256;
 
     // Labels RFC 5705 §4 keeps from exporters: TLS's own uses of the PRF.
     private static readonly string[] s_reservedLabels =
@@ -55,6 +54,7 @@ public sealed class DtlsConnection : IAsyncDisposable
     private readonly List<Range> _applicationData = [];
     private Task _receiveLoop = Task.CompletedTask;
     private bool _disposed;
+    private long _applicationDropped;
 
     private DtlsConnection(IDatagramTransport transport, ProtocolSettings settings)
     {
@@ -66,11 +66,11 @@ public sealed class DtlsConnection : IAsyncDisposable
             settings.LoggerFactory.CreateLogger<DtlsConnection>()
         );
         _received = Channel.CreateBounded<ReceivedRecord>(
-            new BoundedChannelOptions(ReceiveQueueCapacity)
+            new BoundedChannelOptions(settings.ReceiveQueueCapacity)
             {
-                FullMode = BoundedChannelFullMode.DropWrite,
+                FullMode = settings.ReceiveQueueFullMode,
             },
-            static record => record.Return()
+            DropReceived
         );
         _timer = settings.TimeProvider.CreateTimer(
             static state => ((DtlsConnection)state!).OnTimer(),
@@ -107,6 +107,47 @@ public sealed class DtlsConnection : IAsyncDisposable
             lock (_lock)
             {
                 return _protocol.MaximumApplicationDataSize;
+            }
+        }
+    }
+
+    /// <summary>What the connection has sent, received and refused so far.</summary>
+    public DtlsConnectionStatistics Statistics
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _protocol.Statistics with
+                {
+                    ApplicationRecordsDropped = Interlocked.Read(ref _applicationDropped),
+                };
+            }
+        }
+    }
+
+    /// <summary>
+    /// The largest datagram sent. It starts at <see cref="DtlsConnectionOptions.MaximumDatagramSize"/>;
+    /// setting it tells the connection the path MTU changed, as when ICE moves to another candidate
+    /// pair.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">The size is under 256 or over 65,507 bytes.</exception>
+    public int MaximumDatagramSize
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _protocol.MaximumDatagramSize;
+            }
+        }
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(value, 256);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(value, 65507);
+            lock (_lock)
+            {
+                _protocol.SetMaximumDatagramSize(value);
             }
         }
     }
@@ -263,6 +304,32 @@ public sealed class DtlsConnection : IAsyncDisposable
         await FlushAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
+    // For tests: the current read and write epochs.
+    internal (ushort Read, ushort Write) Epochs
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _protocol.Epochs;
+            }
+        }
+    }
+
+    // For tests: whether the connection failed.
+    internal bool IsFailed => _protocol.State == ProtocolState.Failed;
+
+    // For tests: sends a handshake message in an epoch the protocol would not choose.
+    internal async ValueTask SendHandshakeForTestAsync(ushort epoch, byte type, byte[] body)
+    {
+        lock (_lock)
+        {
+            _protocol.SendHandshakeForTest(epoch, type, body);
+        }
+
+        await FlushAsync(CancellationToken.None).ConfigureAwait(false);
+    }
+
     /// <summary>Closes the connection, telling the peer with a close_notify alert.</summary>
     /// <param name="cancellationToken">Cancels sending the alert.</param>
     /// <returns>A task that completes when the alert has been sent.</returns>
@@ -361,7 +428,7 @@ public sealed class DtlsConnection : IAsyncDisposable
                         ReceivedRecord record = ReceivedRecord.Copy(buffer.AsSpan(range));
                         if (!_received.Writer.TryWrite(record))
                         {
-                            record.Return();
+                            DropReceived(record);
                         }
                     }
 
@@ -549,6 +616,13 @@ public sealed class DtlsConnection : IAsyncDisposable
             ObjectDisposedException.ThrowIf(_disposed, this);
             _protocol.ExportKeyingMaterial(label, context, useContext, destination);
         }
+    }
+
+    private void DropReceived(ReceivedRecord record)
+    {
+        record.Return();
+        _ = Interlocked.Increment(ref _applicationDropped);
+        DtlsMetrics.ApplicationRecordsDropped.Add(1);
     }
 
     // Application data received, in a buffer rented from the shared pool.

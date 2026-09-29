@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using Dtls.NET.Crypto;
 using Dtls.NET.Handshake;
@@ -10,7 +11,12 @@ namespace Dtls.NET.Protocol;
 // CertificateRequest, Certificate, CertificateVerify and Finished; the client's flight is acknowledged.
 internal sealed partial class DtlsProtocol
 {
-    private byte[]? _expectedCookie;
+    // The cookie a HelloRetryRequest carries: a format byte, the first ClientHello's hash, the suite
+    // and the group asked for, then an HMAC over all of it, the client's random and its session id.
+    // The server keeps nothing between the two ClientHellos (RFC 9147 §5.1): the second brings back
+    // what the transcript needs.
+    private const byte CookieFormat = 1;
+    private const int CookieMacLength = 32;
 
     private bool Offers13(ClientHello hello) =>
         _settings.Allows13
@@ -21,9 +27,6 @@ internal sealed partial class DtlsProtocol
     {
         switch (_step, message.Type)
         {
-            case (Step.SecondClientHello, HandshakeType.ClientHello):
-                ReceiveClientHello13(message, ClientHello.Decode(message.Body));
-                return;
             case (Step.ClientCertificate, HandshakeType.Certificate):
                 Certificate13 certificate = Certificate13.Decode(message.Body);
                 if (certificate.Context.Length != 0)
@@ -62,18 +65,16 @@ internal sealed partial class DtlsProtocol
 
     private void ReceiveClientHello13(HandshakeMessage message, ClientHello hello)
     {
-        bool second = _step == Step.SecondClientHello;
         CipherSuiteInfo suite = _settings.CipherSuites13.FirstOrDefault(s =>
             hello.CipherSuites.Contains((ushort)s.Suite)
         );
-        if (suite.Suite == default || (second && suite.Suite != _suite.Suite))
+        if (suite.Suite == default)
         {
             throw DtlsException.HandshakeFailure(
                 "the client offers no DTLS 1.3 cipher suite this server uses"
             );
         }
 
-        _suite = suite;
         Extensions extensions = hello.Extensions;
         if (
             !extensions.TryGet(ExtensionType.SignatureAlgorithms, out ReadOnlySpan<byte> schemes)
@@ -91,42 +92,55 @@ internal sealed partial class DtlsProtocol
         List<(NamedGroup Group, byte[] Key)> shares = Messages13.ReadClientKeyShares(shareData);
         List<NamedGroup> groups = HelloExtensions.ReadSupportedGroups(groupData);
         (NamedGroup shareGroup, byte[]? shareKey) = shares.Find(s => KeyShare.IsSupported(s.Group));
-        NamedGroup? retryGroup = null;
-        if (shareKey is null)
+        _suite = suite;
+
+        if (extensions.TryGet(ExtensionType.Cookie, out ReadOnlySpan<byte> cookieData))
         {
-            retryGroup = KeyShare.SupportedGroups.FirstOrDefault(groups.Contains);
-            if (retryGroup == default(NamedGroup))
+            // The second ClientHello: it must answer the HelloRetryRequest that carried its cookie.
+            byte[] cookie = Messages13.ReadCookie(cookieData);
+            if (
+                !TryOpenCookie(cookie, hello, out byte[] firstHash, out NamedGroup requested)
+                || (requested != default && shareGroup != requested)
+                || shareKey is null
+            )
+            {
+                // RFC 9147 §5.1. The server keeps no state for the client, so it answers and forgets.
+                LogCookieRefused();
+                SendAlert(DtlsAlert.IllegalParameter, fatal: true);
+                _reassembler.Restart(checked((ushort)(message.MessageSeq + 1)));
+                return;
+            }
+
+            _transcript13 = new Transcript();
+            _transcript13.Add13(HandshakeType.MessageHash, firstHash);
+            _transcript13.Add13(
+                HandshakeType.ServerHello,
+                HelloRetryRequestBody(hello.SessionId, requested, cookie)
+            );
+            _transcript13.Add13(message.Type, message.Body);
+
+            // The HelloRetryRequest was this server's message 0; the ServerHello is 1.
+            _sendSequence = 1;
+        }
+        else if (_settings.CookieExchange || shareKey is null)
+        {
+            NamedGroup group = shareKey is null
+                ? KeyShare.SupportedGroups.FirstOrDefault(groups.Contains)
+                : default;
+            if (shareKey is null && group == default)
             {
                 throw DtlsException.HandshakeFailure(
                     "the client offers no elliptic curve group this server uses"
                 );
             }
-        }
 
-        bool cookieValid =
-            !_settings.CookieExchange
-            || (
-                _expectedCookie is not null
-                && extensions.TryGet(ExtensionType.Cookie, out ReadOnlySpan<byte> cookie)
-                && CryptographicOperations.FixedTimeEquals(
-                    Messages13.ReadCookie(cookie),
-                    _expectedCookie
-                )
-            );
-        if (second && (!cookieValid || shareKey is null))
-        {
-            // RFC 9147 §5.1: a ClientHello with an invalid cookie ends the handshake.
-            throw DtlsException.IllegalParameter(
-                "the second ClientHello does not answer the HelloRetryRequest"
-            );
-        }
-
-        _transcript13 ??= new Transcript();
-        _transcript13.Add13(message.Type, message.Body);
-        if (!cookieValid || shareKey is null)
-        {
-            SendHelloRetryRequest(hello, retryGroup);
+            SendHelloRetryRequest(message, hello, group);
             return;
+        }
+        else
+        {
+            _transcript13 = new Transcript();
+            _transcript13.Add13(message.Type, message.Body);
         }
 
         _peerSignatureSchemes = HelloExtensions.ReadSignatureAlgorithms(schemes);
@@ -136,42 +150,125 @@ internal sealed partial class DtlsProtocol
         _step = _settings.ClientCertificateRequired ? Step.ClientCertificate : Step.Finished;
     }
 
-    // Asks for the ClientHello again, with a cookie that proves the client's address and, when needed,
-    // a key share for a group this server uses (RFC 9147 §5.1). The transcript keeps the first
-    // ClientHello as its hash.
-    private void SendHelloRetryRequest(ClientHello hello, NamedGroup? group)
+    // Asks for the ClientHello again with a cookie and, when needed, a key share for a group this
+    // server uses, then forgets the client: like a HelloVerifyRequest, it is answered again whenever
+    // the first ClientHello is sent again.
+    private void SendHelloRetryRequest(
+        HandshakeMessage message,
+        ClientHello hello,
+        NamedGroup group
+    )
+    {
+        Span<byte> firstHash = stackalloc byte[Prf.HashSize(_suite.PrfHash)];
+        using (Transcript first = new())
+        {
+            first.Add13(message.Type, message.Body);
+            _ = KeySchedule13.Hash(_suite.PrfHash, first.Bytes, firstHash);
+        }
+
+        byte[] cookie = SealCookie(firstHash, group, hello);
+        HandshakeMessage request = new(
+            HandshakeType.ServerHello,
+            message.MessageSeq,
+            HelloRetryRequestBody(hello.SessionId, group, cookie)
+        );
+        _reassembler.Restart(checked((ushort)(message.MessageSeq + 1)));
+        Flight flight = new();
+        flight.AddMessage(0, request);
+        Transmit(flight);
+        LogCookieSent();
+    }
+
+    // The HelloRetryRequest for the suite, a group and a cookie; built the same way when it is sent
+    // and when the transcript is rebuilt from the cookie.
+    private byte[] HelloRetryRequestBody(byte[] sessionId, NamedGroup group, byte[] cookie)
     {
         Extensions extensions = new Extensions().Add(
             ExtensionType.SupportedVersions,
             Messages13.SelectedVersion(ProtocolVersion.Dtls13)
         );
-        if (group is { } selected)
+        if (group != default)
         {
-            _ = extensions.Add(ExtensionType.KeyShare, Messages13.SelectedGroup(selected));
+            _ = extensions.Add(ExtensionType.KeyShare, Messages13.SelectedGroup(group));
         }
 
-        if (_settings.CookieExchange)
-        {
-            _expectedCookie = RandomNumberGenerator.GetBytes(32);
-            _ = extensions.Add(ExtensionType.Cookie, Messages13.Cookie(_expectedCookie));
-        }
-
-        _transcript13!.ReplaceWithMessageHash(_suite.PrfHash);
-        ServerHello request = new(
+        _ = extensions.Add(ExtensionType.Cookie, Messages13.Cookie(cookie));
+        _scratch.Clear();
+        new ServerHello(
             Messages13.HelloRetryRequestRandom.ToArray(),
-            hello.SessionId,
+            sessionId,
             (ushort)_suite.Suite,
             extensions
-        );
-        HandshakeMessage message = NewMessage(HandshakeType.ServerHello, request.Encode);
-        _transcript13.Add13(message.Type, message.Body);
-        Flight flight = new();
-        flight.AddMessage(0, message);
+        ).Encode(_scratch);
+        return _scratch.ToArray();
+    }
 
-        // Not timed: the client sends its ClientHello again when this is lost, and gets it again.
-        SendFlight(flight, timed: false);
-        _step = Step.SecondClientHello;
-        LogCookieSent();
+    private byte[] SealCookie(ReadOnlySpan<byte> firstHash, NamedGroup group, ClientHello hello)
+    {
+        _cookieSecret ??= RandomNumberGenerator.GetBytes(32);
+        int bodyLength = 2 + firstHash.Length + 4;
+        byte[] cookie = new byte[bodyLength + CookieMacLength];
+        cookie[0] = CookieFormat;
+        cookie[1] = (byte)firstHash.Length;
+        firstHash.CopyTo(cookie.AsSpan(2));
+        BinaryPrimitives.WriteUInt16BigEndian(
+            cookie.AsSpan(2 + firstHash.Length),
+            (ushort)_suite.Suite
+        );
+        BinaryPrimitives.WriteUInt16BigEndian(cookie.AsSpan(4 + firstHash.Length), (ushort)group);
+        CookieMac(cookie.AsSpan(0, bodyLength), hello, cookie.AsSpan(bodyLength));
+        return cookie;
+    }
+
+    private bool TryOpenCookie(
+        byte[] cookie,
+        ClientHello hello,
+        out byte[] firstHash,
+        out NamedGroup group
+    )
+    {
+        firstHash = [];
+        group = default;
+        int hashLength = Prf.HashSize(_suite.PrfHash);
+        int bodyLength = 2 + hashLength + 4;
+        if (
+            _cookieSecret is null
+            || cookie.Length != bodyLength + CookieMacLength
+            || cookie[0] != CookieFormat
+            || cookie[1] != hashLength
+        )
+        {
+            return false;
+        }
+
+        Span<byte> mac = stackalloc byte[CookieMacLength];
+        CookieMac(cookie.AsSpan(0, bodyLength), hello, mac);
+        ushort suite = BinaryPrimitives.ReadUInt16BigEndian(cookie.AsSpan(2 + hashLength));
+        if (
+            !CryptographicOperations.FixedTimeEquals(mac, cookie.AsSpan(bodyLength))
+            || suite != (ushort)_suite.Suite
+        )
+        {
+            return false;
+        }
+
+        firstHash = cookie.AsSpan(2, hashLength).ToArray();
+        group = (NamedGroup)BinaryPrimitives.ReadUInt16BigEndian(cookie.AsSpan(4 + hashLength));
+        return true;
+    }
+
+    // The second ClientHello keeps the first one's random and session id (RFC 8446 §4.1.2), so the MAC
+    // ties the cookie to that client.
+    private void CookieMac(ReadOnlySpan<byte> body, ClientHello hello, Span<byte> destination)
+    {
+        using IncrementalHash hmac = IncrementalHash.CreateHMAC(
+            HashAlgorithmName.SHA256,
+            _cookieSecret!
+        );
+        hmac.AppendData(body);
+        hmac.AppendData(hello.Random);
+        hmac.AppendData(hello.SessionId);
+        _ = hmac.GetHashAndReset(destination);
     }
 
     // ServerHello in epoch 0, the rest in epoch 2. Sent until the client's flight arrives.

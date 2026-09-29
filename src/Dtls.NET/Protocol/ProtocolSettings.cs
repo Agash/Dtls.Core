@@ -25,6 +25,8 @@ internal sealed class ProtocolSettings : IDisposable
         HandshakeTimeout = options.HandshakeTimeout;
         InitialRetransmissionTimeout = options.InitialRetransmissionTimeout;
         MaximumHandshakeMessageSize = options.MaximumHandshakeMessageSize;
+        ReceiveQueueCapacity = options.ReceiveQueueCapacity;
+        ReceiveQueueFullMode = options.ReceiveQueueFullMode;
         RequireExtendedMasterSecret = options.RequireExtendedMasterSecret;
         SrtpProfiles = [.. options.SrtpProtectionProfiles.Distinct()];
         TimeProvider = options.TimeProvider ?? defaultTimeProvider ?? TimeProvider.System;
@@ -65,6 +67,10 @@ internal sealed class ProtocolSettings : IDisposable
     public TimeSpan InitialRetransmissionTimeout { get; }
 
     public int MaximumHandshakeMessageSize { get; }
+
+    public int ReceiveQueueCapacity { get; }
+
+    public System.Threading.Channels.BoundedChannelFullMode ReceiveQueueFullMode { get; }
 
     public bool RequireExtendedMasterSecret { get; }
 

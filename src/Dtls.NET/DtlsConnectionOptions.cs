@@ -1,4 +1,5 @@
 using System.Net.Security;
+using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 
 namespace Dtls.NET;
@@ -55,6 +56,23 @@ public abstract class DtlsConnectionOptions
     /// </summary>
     public bool RequireExtendedMasterSecret { get; set; } = true;
 
+    /// <summary>
+    /// How many received application data records wait for <see cref="DtlsConnection.ReceiveAsync"/>; 256
+    /// by default. The connection reads the transport whether or not the application does, so a full
+    /// queue drops records as a full socket buffer drops datagrams, and counts them in
+    /// <see cref="DtlsConnectionStatistics.ApplicationRecordsDropped"/>.
+    /// </summary>
+    public int ReceiveQueueCapacity { get; set; } = 256;
+
+    /// <summary>
+    /// Which record a full receive queue drops: <see cref="BoundedChannelFullMode.DropWrite"/> (the one
+    /// arriving, the default) or <see cref="BoundedChannelFullMode.DropOldest"/> (the oldest waiting, which
+    /// suits live media) or <see cref="BoundedChannelFullMode.DropNewest"/>. <see cref="BoundedChannelFullMode.Wait"/> is not allowed: the connection never
+    /// stops reading.
+    /// </summary>
+    public BoundedChannelFullMode ReceiveQueueFullMode { get; set; } =
+        BoundedChannelFullMode.DropWrite;
+
     /// <summary>The largest handshake message accepted from the peer; 64 KiB by default.</summary>
     public int MaximumHandshakeMessageSize { get; set; } = 64 * 1024;
 
@@ -104,6 +122,26 @@ public abstract class DtlsConnectionOptions
         }
 
         ArgumentNullException.ThrowIfNull(SrtpProtectionProfiles, nameof(SrtpProtectionProfiles));
+        ArgumentOutOfRangeException.ThrowIfLessThan(
+            ReceiveQueueCapacity,
+            1,
+            nameof(ReceiveQueueCapacity)
+        );
+        if (
+            ReceiveQueueFullMode
+            is not (
+                BoundedChannelFullMode.DropWrite
+                or BoundedChannelFullMode.DropOldest
+                or BoundedChannelFullMode.DropNewest
+            )
+        )
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(ReceiveQueueFullMode),
+                ReceiveQueueFullMode,
+                "A DTLS connection never stops reading: a full receive queue must drop."
+            );
+        }
         if (
             (EnabledProtocols & (DtlsProtocols.Dtls12 | DtlsProtocols.Dtls13)) == DtlsProtocols.None
         )

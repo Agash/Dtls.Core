@@ -43,7 +43,7 @@ internal sealed partial class DtlsProtocol
                 _reassembler.Restart(fragment.MessageSeq);
             }
 
-            _ = _reassembler.Add(fragment);
+            _ = _reassembler.Add(fragment, authenticated: false);
             if (_reassembler.TryDequeue(out HandshakeMessage message))
             {
                 ReceiveClientHelloCandidate(message, recordSequence);

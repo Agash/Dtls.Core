@@ -54,7 +54,14 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
     private byte[]? _building;
     private int _buildingLength;
 
-    public int MaximumDatagram { get; } = maximumDatagram;
+    public int MaximumDatagram { get; private set; } = maximumDatagram;
+
+    // A new path MTU: what is being built goes out at the old size, what follows at the new.
+    public void SetMaximumDatagram(int size)
+    {
+        Flush();
+        MaximumDatagram = size;
+    }
 
     public ushort WriteEpoch => _write[^1].Epoch;
 
@@ -62,6 +69,28 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
 
     // Records dropped because they failed to parse, authenticate, or were replays.
     public long Dropped { get; private set; }
+
+    // DTLS 1.3 records that failed to authenticate under the keys of one epoch, most of any epoch. RFC
+    // 9147 §4.5.3 bounds this per key: past 2^36 forgeries an attacker's chance against AES-GCM and
+    // ChaCha20-Poly1305 is no longer negligible, and the connection must end.
+    public const long IntegrityLimit = 1L << 36;
+
+    public bool IntegrityLimitReached { get; private set; }
+
+    // Protected records that failed to authenticate, in any epoch.
+    public long AuthenticationFailures { get; private set; }
+
+    // Epochs never wrap (RFC 6347 §4.1, RFC 9147 §4.2.1). Dtls.NET counts them in 16 bits, the
+    // width DTLS 1.2 records carry, which allows 65,532 DTLS 1.3 key updates: a new association
+    // is needed after that.
+    public static ushort NextEpoch(ushort epoch) =>
+        epoch < ushort.MaxValue
+            ? (ushort)(epoch + 1)
+            : throw new DtlsException(
+                DtlsAlert.InternalError,
+                isRemote: false,
+                "The epoch is exhausted: the association must be replaced."
+            );
 
     // The protection overhead of a record in an epoch, header included.
     public int Overhead(ushort epoch)
@@ -74,11 +103,11 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
 
     // DTLS 1.2: the next epoch's keys.
     public void InstallWrite(RecordCipher cipher) =>
-        _write.Add(new WriteState(checked((ushort)(WriteEpoch + 1)), cipher, null));
+        _write.Add(new WriteState(NextEpoch(WriteEpoch), cipher, null));
 
     public void InstallRead(RecordCipher cipher)
     {
-        _read.Add(new ReadState(checked((ushort)(ReadEpoch + 1)), cipher, null));
+        _read.Add(new ReadState(NextEpoch(ReadEpoch), cipher, null));
         if (_read.Count > 2)
         {
             _read[0].Dispose();
@@ -338,16 +367,29 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
         }
 
         ReadState? state = FindRead(epoch);
-        if (state is null || state.Cipher13 is not null || !state.Window.IsFresh(sequence))
+        if (state is null || state.Cipher13 is not null)
         {
             return -1;
         }
 
-        int length = state.Cipher is null
-            ? fragment.Length
-            : state.Cipher.Open(((ulong)epoch << 48) | sequence, type, fragment, out offset);
+        // Replay protection needs authentication: an unprotected record proves nothing about its
+        // sequence number, and letting one move the window would let a single forged datagram with a
+        // high number make every genuine record after it look old. Duplicate unprotected handshake
+        // records are recognised by their message_seq instead.
+        if (state.Cipher is null)
+        {
+            return fragment.Length;
+        }
+
+        if (!state.Window.IsFresh(sequence))
+        {
+            return -1;
+        }
+
+        int length = state.Cipher.Open(((ulong)epoch << 48) | sequence, type, fragment, out offset);
         if (length < 0)
         {
+            AuthenticationFailures++;
             return -1;
         }
 
@@ -404,13 +446,21 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
         }
 
         ulong sequence = Reconstruct(state.Window.NextExpected, partial, 8 * sequenceLength);
-        int inner = state.Window.IsFresh(sequence)
-            ? state.Cipher13.Open(sequence, header, ciphertext)
-            : -1;
+        bool fresh = state.Window.IsFresh(sequence);
+        int inner = fresh ? state.Cipher13.Open(sequence, header, ciphertext) : -1;
         int typeAt = inner - 1;
         while (typeAt >= 0 && ciphertext[typeAt] == 0)
         {
             typeAt--;
+        }
+
+        if (fresh && inner < 0)
+        {
+            AuthenticationFailures++;
+            if (++state.AuthenticationFailures >= IntegrityLimit)
+            {
+                IntegrityLimitReached = true;
+            }
         }
 
         if (typeAt < 0)
@@ -528,5 +578,7 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
         : EpochState(epoch, cipher, cipher13)
     {
         public ReplayWindow Window;
+
+        public long AuthenticationFailures { get; set; }
     }
 }
