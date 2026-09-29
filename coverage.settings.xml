@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Coverage scope: the library's own code, not the tests. -->
+<Configuration>
+  <CodeCoverage>
+    <Sources>
+      <Exclude>
+        <Source>.*[/\]obj[/\].*</Source>
+      </Exclude>
+    </Sources>
+    <ModulePaths>
+      <Exclude>
+        <ModulePath>.*\.Tests\.dll$</ModulePath>
+      </Exclude>
+    </ModulePaths>
+    <Attributes>
+      <Exclude>
+        <Attribute>^System\.Diagnostics\.CodeAnalysis\.ExcludeFromCodeCoverageAttribute$</Attribute>
+        <Attribute>^System\.CodeDom\.Compiler\.GeneratedCodeAttribute$</Attribute>
+      </Exclude>
+    </Attributes>
+  </CodeCoverage>
+</Configuration>

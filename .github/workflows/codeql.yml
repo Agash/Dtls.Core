@@ -1,0 +1,52 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, so a newly published rule finds existing code without waiting for the next push.
+    - cron: "31 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze C#
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup .NET SDK
+        # Install both SDKs and let global.json pick: setup-dotnet resolving the pinned preview from
+        # global.json alone left the runner on its preinstalled 10.0.x, which cannot target net11.0.
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: |
+            10.0.x
+            11.0.x
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: csharp
+          build-mode: manual
+
+      # Manual build mode: the autobuilder does not know about the pinned preview SDK or the
+      # solution layout, and a build it cannot complete yields no analysis at all.
+      - name: Build solution
+        run: dotnet build Dtls.NET.slnx --configuration Release
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:csharp"

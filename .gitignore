@@ -1,0 +1,28 @@
+## .NET
+bin/
+obj/
+*.user
+.vs/
+artifacts/
+
+## NuGet
+*.nupkg
+*.snupkg
+
+# VS/Rider per-user launch profiles
+**/Properties/launchSettings.json
+
+## Native build output
+native/build/
+*.dll
+*.lib
+*.exp
+*.obj
+*.pdb
+*.ilk
+
+# Test run output (coverage reports)
+TestResults/
+
+# Reference sources and specifications, pulled locally, never committed
+/external/

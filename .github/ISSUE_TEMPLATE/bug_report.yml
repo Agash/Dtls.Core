@@ -1,0 +1,47 @@
+name: Bug report
+description: Report a problem with Dtls.NET
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: A clear description of the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal code or steps that trigger the problem. Note whether you were publishing or receiving, and which other app was involved (for example OBS).
+    validations:
+      required: true
+  - type: input
+    id: package-version
+    attributes:
+      label: Dtls.NET version
+      placeholder: e.g. 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system, and the peer on the other end
+      placeholder: e.g. Ubuntu 26.04, peer Chrome 140 or OpenSSL 3.5
+    validations:
+      required: true
+  - type: input
+    id: dotnet-version
+    attributes:
+      label: .NET version
+      placeholder: e.g. 10.0.100
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant exception or console output, if any.
+      render: shell
+    validations:
+      required: false

@@ -1,0 +1,182 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NuGetDirectory: ${{ github.workspace }}/nuget
+  DOTNET_NOLOGO: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.rid }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, rid: linux-x64, format: true }
+          - { os: ubuntu-24.04-arm, rid: linux-arm64, format: false }
+          - { os: windows-latest, rid: win-x64, format: false }
+          - { os: macos-latest, rid: osx-arm64, format: false }
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # MinVer needs the tags
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: |
+            10.0.x
+            11.0.x
+
+      - name: Restore
+        run: dotnet restore Dtls.NET.slnx
+
+      - name: Check formatting
+        if: matrix.format
+        run: |
+          # Sequential: the .NET 11 RC1 SDK's parallel tool restore attaches one package's commands to
+          # another and fails the restore.
+          dotnet tool restore --disable-parallel
+          dotnet csharpier check .
+
+      - name: Build
+        run: dotnet build Dtls.NET.slnx --no-restore -c Release
+
+      # The interop tests run OpenSSL's s_server and s_client, which every runner image carries.
+      - name: OpenSSL version
+        run: openssl version
+
+      - name: Test
+        run: >-
+          dotnet test --solution Dtls.NET.slnx --no-build -c Release
+          --coverage --coverage-settings coverage.settings.xml --coverage-output-format cobertura --coverage-output coverage.cobertura.xml
+
+      - name: Summarize coverage
+        if: always()
+        shell: pwsh
+        run: |
+          $report = Get-ChildItem -Recurse -Filter coverage.cobertura.xml | Select-Object -First 1
+          if (-not $report) { '### Coverage (${{ matrix.rid }})', '', 'No report was produced.' | Add-Content $env:GITHUB_STEP_SUMMARY; exit 0 }
+          [xml]$xml = Get-Content $report.FullName
+          $lines = [double]$xml.coverage.'line-rate'
+          $branches = [double]$xml.coverage.'branch-rate'
+          @(
+            '### Coverage (${{ matrix.rid }})'
+            ''
+            '| Metric | Covered | Total | Rate |'
+            '| --- | ---: | ---: | ---: |'
+            "| Lines | $($xml.coverage.'lines-covered') | $($xml.coverage.'lines-valid') | $($lines.ToString('P1')) |"
+            "| Branches | $($xml.coverage.'branches-covered') | $($xml.coverage.'branches-valid') | $($branches.ToString('P1')) |"
+          ) | Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ matrix.rid }}
+          if-no-files-found: warn
+          path: "**/coverage.cobertura.xml"
+
+      # IsAotCompatible only runs the analyzers. Publishing and running a real program is what proves
+      # the library works as Native AOT.
+      - name: Native AOT publish and run
+        shell: pwsh
+        run: |
+          dotnet publish samples/Dtls.NET.Smoke/Dtls.NET.Smoke.csproj -r ${{ matrix.rid }} -c Release -o artifacts/smoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $exe = if ($IsWindows) { './artifacts/smoke/Dtls.NET.Smoke.exe' } else { './artifacts/smoke/Dtls.NET.Smoke' }
+          & $exe
+          exit $LASTEXITCODE
+
+  pack:
+    name: Pack
+    needs: [test]
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Signing the provenance statement for the package.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: |
+            10.0.x
+            11.0.x
+
+      - name: Pack
+        run: dotnet pack src/Dtls.NET/Dtls.NET.csproj -c Release -o ${{ env.NuGetDirectory }}
+
+      # A signed statement, hosted by GitHub, of which workflow and commit produced these exact
+      # package files, so a download can be verified as built from this repository.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ env.NuGetDirectory }}/*.nupkg
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nuget-package
+          if-no-files-found: error
+          retention-days: 1
+          path: ${{ env.NuGetDirectory }}/*.nupkg
+
+  publish_nuget:
+    name: Publish to NuGet
+    needs: [pack]
+    # Publishing runs only when a GitHub release is published (or on manual dispatch). Requires the
+    # nuget.org trusted-publishing policy for this package.
+    if: (github.event_name == 'release' && github.event.action == 'published') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # Declaring an environment records a deployment, which surfaces the package on the repository page.
+    environment:
+      name: nuget.org
+      url: https://www.nuget.org/packages/Dtls.NET
+    permissions:
+      contents: read
+      id-token: write # OIDC for nuget.org trusted publishing
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: nuget-package
+          path: ${{ env.NuGetDirectory }}
+
+      - uses: actions/setup-dotnet@v6
+
+      - name: NuGet login (OIDC)
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: Agash
+
+      - name: Publish
+        shell: bash
+        run: |
+          for f in "${{ env.NuGetDirectory }}"/*.nupkg; do
+            dotnet nuget push "$f" \
+              --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" \
+              --source https://api.nuget.org/v3/index.json \
+              --skip-duplicate
+          done

@@ -1,0 +1,559 @@
+using System.Net.Security;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using Dtls.NET.Crypto;
+using Dtls.NET.Handshake;
+using Dtls.NET.Records;
+using Dtls.NET.Wire;
+using Microsoft.Extensions.Logging;
+
+namespace Dtls.NET.Protocol;
+
+internal enum DtlsRole
+{
+    Client,
+    Server,
+}
+
+internal enum ProtocolState
+{
+    Handshaking,
+    Connected,
+    Closed,
+    Failed,
+}
+
+// One DTLS 1.2 connection (RFC 6347) with no I/O of its own: it is handed the datagrams that arrive
+// from the peer and the time, and queues the datagrams to send. The handshake, record protection,
+// fragmentation, retransmission and replay protection happen here; DtlsConnection drives it over a
+// datagram transport. Not thread-safe: the driver serialises every call.
+internal sealed partial class DtlsProtocol(ProtocolSettings settings, object owner, ILogger logger)
+    : IDisposable
+{
+    private const byte WarningLevel = 1;
+    private const byte FatalLevel = 2;
+    private static readonly TimeSpan s_maximumRetransmissionTimeout = TimeSpan.FromSeconds(60);
+
+    private readonly ProtocolSettings _settings = settings;
+    private readonly object _owner = owner;
+    private readonly ILogger _logger = logger;
+    private readonly RecordLayer _records = new(settings.MaximumDatagramSize);
+    private readonly HandshakeReassembler _reassembler = new(settings.MaximumHandshakeMessageSize);
+    private readonly Transcript _transcript = new();
+    private readonly WireWriter _scratch = new(512);
+    private readonly byte[] _localRandom = RandomNumberGenerator.GetBytes(32);
+    private readonly TimeProvider _time = settings.TimeProvider;
+
+    private byte[]? _peerRandom;
+    private CipherSuiteInfo _suite;
+    private KeyShare? _keyShare;
+    private byte[]? _masterSecret;
+    private ushort _sendSequence;
+    private X509Certificate2? _remoteCertificate;
+    private SrtpProtectionProfile? _srtpProfile;
+    private RecordCipher? _pendingRead;
+    private Step _step = settings.Role == DtlsRole.Client ? Step.ServerHello : Step.ClientHello;
+
+    // The last flight sent, kept to send again (RFC 6347 §4.2.4).
+    private Flight? _flight;
+    private bool _flightTimed;
+    private TimeSpan _timeout = settings.InitialRetransmissionTimeout;
+    private long _retransmitAt = long.MaxValue;
+    private long _handshakeDeadline = long.MaxValue;
+    private int _refusedRenegotiation = -1;
+    private bool _closeNotifySent;
+
+    // Where the handshake is: the message expected next.
+    private enum Step
+    {
+        ClientHello,
+        ServerHello,
+        ServerCertificate,
+        ServerKeyExchange,
+        CertificateRequestOrDone,
+        ServerHelloDone,
+        ClientCertificate,
+        ClientKeyExchange,
+        CertificateVerify,
+        Finished,
+        Done,
+    }
+
+    public DtlsRole Role => _settings.Role;
+
+    public ProtocolState State { get; private set; }
+
+    // Why the connection failed: a DtlsException, a TimeoutException for a handshake that ran out of
+    // time, or what the driver aborted it with.
+    public Exception? Error { get; private set; }
+
+    // Whether the peer closed the connection with close_notify.
+    public bool ClosedByPeer { get; private set; }
+
+    public TlsCipherSuite NegotiatedCipherSuite => _suite.Suite;
+
+    public SslApplicationProtocol NegotiatedApplicationProtocol { get; private set; }
+
+    public X509Certificate2? RemoteCertificate => _remoteCertificate;
+
+    public SrtpKeyingMaterial? SrtpKeyingMaterial { get; private set; }
+
+    public int MaximumApplicationDataSize =>
+        State == ProtocolState.Connected
+            ? _records.MaximumDatagram - _records.Overhead(_records.WriteEpoch)
+            : 0;
+
+    // Records dropped on the way in: malformed, unauthenticated, replayed or from an unknown epoch.
+    public long DroppedRecords => _records.Dropped;
+
+    // When OnTimer should next run, as a TimeProvider timestamp; long.MaxValue when nothing waits.
+    public long Deadline =>
+        Math.Min(_flightTimed ? _retransmitAt : long.MaxValue, _handshakeDeadline);
+
+    // Starts the handshake: a client sends its ClientHello; a server waits for one.
+    public void Start()
+    {
+        long now = _time.GetTimestamp();
+        _handshakeDeadline = now + Ticks(_settings.HandshakeTimeout);
+        LogStarting(Role);
+        Guard(() =>
+        {
+            if (Role == DtlsRole.Client)
+            {
+                SendClientHello(cookie: []);
+            }
+        });
+    }
+
+    // Opens a datagram from the peer in place and runs the protocol on its records. The application
+    // data it carries is left in the datagram; its ranges are added to applicationData.
+    public void Receive(Span<byte> datagram, List<Range> applicationData)
+    {
+        if (State is ProtocolState.Closed or ProtocolState.Failed)
+        {
+            return;
+        }
+
+        try
+        {
+            RecordDispatcher dispatcher = new(this, applicationData);
+            _records.Read(datagram, ref dispatcher);
+            if (_reassembler.TakePreviousFlightRetransmitted())
+            {
+                // The peer sent its last flight again whole: it has not seen this side's answer.
+                LogAnsweringRetransmission();
+                Transmit(_flight);
+            }
+        }
+        catch (DtlsException error)
+        {
+            Fail(error, sendAlert: !error.IsRemote);
+        }
+    }
+
+    // Sends the last flight again when its answer is overdue, and fails the handshake when it has run
+    // out of time.
+    public void OnTimer()
+    {
+        if (State is ProtocolState.Closed or ProtocolState.Failed)
+        {
+            return;
+        }
+
+        long now = _time.GetTimestamp();
+        if (State == ProtocolState.Handshaking && now >= _handshakeDeadline)
+        {
+            LogHandshakeTimedOut(_settings.HandshakeTimeout);
+            Fail(
+                new TimeoutException(
+                    $"The DTLS handshake did not complete within {_settings.HandshakeTimeout}."
+                )
+            );
+            return;
+        }
+
+        if (_flightTimed && now >= _retransmitAt)
+        {
+            // RFC 6347 §4.2.4.1: double the timer on each retransmission, up to 60 seconds.
+            _timeout = TimeSpan.FromTicks(
+                Math.Min(_timeout.Ticks * 2, s_maximumRetransmissionTimeout.Ticks)
+            );
+            LogRetransmitting(_timeout);
+            Guard(() => Transmit(_flight));
+            _retransmitAt = now + Ticks(_timeout);
+        }
+    }
+
+    // Sends application data as one record in one datagram. DTLS keeps datagram boundaries: what is
+    // sent here arrives whole or not at all.
+    public void Send(ReadOnlySpan<byte> data)
+    {
+        if (State != ProtocolState.Connected)
+        {
+            throw Error is not null
+                ? new InvalidOperationException("The DTLS connection failed.", Error)
+                : new InvalidOperationException(
+                    $"Application data is sent once connected; the connection is {State}."
+                );
+        }
+
+        if (data.Length > MaximumApplicationDataSize)
+        {
+            throw new ArgumentException(
+                $"{data.Length} bytes do not fit one record; at most {MaximumApplicationDataSize} are sent in one datagram.",
+                nameof(data)
+            );
+        }
+
+        _records.Write(ContentType.ApplicationData, _records.WriteEpoch, data);
+        _records.Flush();
+    }
+
+    public bool TryDequeue(out OutgoingDatagram datagram) => _records.TryDequeue(out datagram);
+
+    // Closes the connection, telling the peer with close_notify.
+    public void Close()
+    {
+        if (State is ProtocolState.Closed or ProtocolState.Failed)
+        {
+            return;
+        }
+
+        SendCloseNotify();
+        State = ProtocolState.Closed;
+        StopTimers();
+        LogClosed(byPeer: false);
+    }
+
+    // Fails the connection with an error from outside the protocol: the transport failed, or an
+    // application callback threw.
+    public void Abort(Exception error) =>
+        Fail(
+            error,
+            alert: error is DtlsException dtls ? dtls.Alert : DtlsAlert.InternalError,
+            sendAlert: error is not IOException
+        );
+
+    // RFC 5705 keying material exporter.
+    public void ExportKeyingMaterial(
+        string label,
+        ReadOnlySpan<byte> context,
+        bool useContext,
+        Span<byte> destination
+    )
+    {
+        if (State != ProtocolState.Connected)
+        {
+            throw new InvalidOperationException("Keying material is exported once connected.");
+        }
+
+        (byte[] client, byte[] server) = Randoms;
+        KeySchedule.Export(
+            _suite,
+            _masterSecret,
+            label,
+            client,
+            server,
+            context,
+            useContext,
+            destination
+        );
+    }
+
+    public void Dispose()
+    {
+        _records.Dispose();
+        _transcript.Dispose();
+        _keyShare?.Dispose();
+        _pendingRead?.Dispose();
+        _remoteCertificate?.Dispose();
+        if (_masterSecret is not null)
+        {
+            CryptographicOperations.ZeroMemory(_masterSecret);
+        }
+    }
+
+    private (byte[] Client, byte[] Server) Randoms =>
+        Role == DtlsRole.Client ? (_localRandom, _peerRandom!) : (_peerRandom!, _localRandom);
+
+    private void OnRecord(
+        ContentType type,
+        ushort epoch,
+        ulong sequence,
+        ReadOnlySpan<byte> payload,
+        int offset,
+        List<Range> applicationData
+    )
+    {
+        if (State is ProtocolState.Closed or ProtocolState.Failed)
+        {
+            return;
+        }
+
+        // Once connected, only the current epoch is authenticated; what arrives in epoch 0 is read
+        // only to recognise the peer retransmitting its last flight.
+        bool current = epoch == _records.ReadEpoch;
+        switch (type)
+        {
+            case ContentType.Handshake:
+                ReceiveHandshake(epoch, sequence, payload);
+                break;
+            case ContentType.ChangeCipherSpec when current:
+                ReceiveChangeCipherSpec(payload);
+                break;
+            case ContentType.Alert when current || State == ProtocolState.Handshaking:
+                ReceiveAlert(payload);
+                break;
+            case ContentType.ApplicationData
+                when current && epoch > 0 && State == ProtocolState.Connected && !payload.IsEmpty:
+                applicationData.Add(new Range(offset, offset + payload.Length));
+                break;
+            default:
+                // Application data before the handshake completes cannot yet be authenticated as the
+                // peer's, and records of a stale epoch are dropped (RFC 6347 §4.1).
+                break;
+        }
+    }
+
+    private void ReceiveHandshake(ushort epoch, ulong recordSequence, ReadOnlySpan<byte> record)
+    {
+        if (Role == DtlsRole.Server && _step == Step.ClientHello && _settings.CookieExchange)
+        {
+            ReceiveClientHelloStatelessly(epoch, recordSequence, record);
+            return;
+        }
+
+        bool encrypted = epoch > 0;
+        while (HandshakeFragment.TryReadNext(ref record, out HandshakeFragment fragment))
+        {
+            // The initial handshake sends its Finished messages, and nothing else, encrypted.
+            bool finished = fragment.Type == HandshakeType.Finished;
+            if (finished != encrypted)
+            {
+                if (encrypted && State == ProtocolState.Connected)
+                {
+                    RefuseRenegotiation(fragment);
+                }
+
+                break;
+            }
+
+            _ = _reassembler.Add(fragment);
+        }
+
+        while (_reassembler.TryDequeue(out HandshakeMessage message))
+        {
+            if (State != ProtocolState.Handshaking)
+            {
+                continue;
+            }
+
+            if (Role == DtlsRole.Client)
+            {
+                ClientReceive(message);
+            }
+            else
+            {
+                ServerReceive(message);
+            }
+        }
+    }
+
+    // A new handshake on a connected connection is a renegotiation, which Dtls.NET does not do; the
+    // peer is told once per message with a no_renegotiation warning (RFC 5746 §4.2).
+    private void RefuseRenegotiation(in HandshakeFragment fragment)
+    {
+        if (
+            fragment.Type is not (HandshakeType.ClientHello or HandshakeType.HelloRequest)
+            || fragment.MessageSeq < _reassembler.Next
+            || fragment.MessageSeq == _refusedRenegotiation
+        )
+        {
+            return;
+        }
+
+        _refusedRenegotiation = fragment.MessageSeq;
+        LogRenegotiationRefused(fragment.Type);
+        SendAlert(DtlsAlert.NoRenegotiation, fatal: false);
+    }
+
+    private void ReceiveChangeCipherSpec(ReadOnlySpan<byte> payload)
+    {
+        // Only where the peer's flight is complete up to its ChangeCipherSpec; one that arrives
+        // earlier, out of order, is dropped and comes again with the retransmitted flight.
+        if (payload is not [1] || _pendingRead is null || _step != Step.Finished)
+        {
+            return;
+        }
+
+        _records.InstallRead(_pendingRead);
+        _pendingRead = null;
+        LogReadEpoch(_records.ReadEpoch);
+    }
+
+    private void ReceiveAlert(ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length != 2)
+        {
+            return;
+        }
+
+        DtlsAlert alert = (DtlsAlert)payload[1];
+        if (alert == DtlsAlert.CloseNotify)
+        {
+            // RFC 5246 §7.2.1: answer with a close_notify of this side's own.
+            SendCloseNotify();
+            ClosedByPeer = true;
+            State = ProtocolState.Closed;
+            StopTimers();
+            LogClosed(byPeer: true);
+            return;
+        }
+
+        if (payload[0] == FatalLevel)
+        {
+            Fail(DtlsException.FromPeer(alert), sendAlert: false);
+            return;
+        }
+
+        LogWarningAlert(alert);
+    }
+
+    // Sends a flight and keeps it to send again; a timed flight is sent again when its answer does
+    // not come, the last flight of the handshake only when the peer asks by retransmitting.
+    private void SendFlight(Flight flight, bool timed)
+    {
+        _reassembler.FlightAnswered();
+        _flight = flight;
+        _flightTimed = timed;
+        _timeout = _settings.InitialRetransmissionTimeout;
+        Transmit(flight);
+        _retransmitAt = timed ? _time.GetTimestamp() + Ticks(_timeout) : long.MaxValue;
+    }
+
+    private void Transmit(Flight? flight) => flight?.Transmit(_records, _scratch);
+
+    private HandshakeMessage NewMessage(HandshakeType type, Action<WireWriter> encode)
+    {
+        _scratch.Clear();
+        encode(_scratch);
+        return new HandshakeMessage(type, _sendSequence++, _scratch.ToArray());
+    }
+
+    private void Connected()
+    {
+        State = ProtocolState.Connected;
+        _step = Step.Done;
+        _handshakeDeadline = long.MaxValue;
+        if (Role == DtlsRole.Client)
+        {
+            // The server's Finished answers the client's last flight; nothing is resent from here.
+            _flightTimed = false;
+        }
+
+        if (_srtpProfile is { } profile)
+        {
+            (int key, int salt) = SrtpKeyingMaterial.Lengths(profile);
+            Span<byte> material = stackalloc byte[(2 * key) + (2 * salt)];
+            (byte[] client, byte[] server) = Randoms;
+            KeySchedule.Export(
+                _suite,
+                _masterSecret,
+                SrtpKeyingMaterial.ExporterLabel,
+                client,
+                server,
+                [],
+                useContext: false,
+                material
+            );
+            SrtpKeyingMaterial = SrtpKeyingMaterial.Split(profile, material);
+            CryptographicOperations.ZeroMemory(material);
+        }
+
+        _keyShare?.Dispose();
+        _keyShare = null;
+        LogConnected(_suite.Suite, _srtpProfile, _remoteCertificate?.Subject);
+    }
+
+    private void SendCloseNotify()
+    {
+        if (!_closeNotifySent)
+        {
+            _closeNotifySent = true;
+            SendAlert(DtlsAlert.CloseNotify, fatal: false);
+        }
+    }
+
+    private void SendAlert(DtlsAlert alert, bool fatal)
+    {
+        ReadOnlySpan<byte> payload = [fatal ? FatalLevel : WarningLevel, (byte)alert];
+        _records.Write(ContentType.Alert, _records.WriteEpoch, payload);
+        _records.Flush();
+    }
+
+    private void Fail(DtlsException error, bool sendAlert) => Fail(error, error.Alert, sendAlert);
+
+    private void Fail(TimeoutException error) =>
+        Fail(error, DtlsAlert.HandshakeFailure, sendAlert: false);
+
+    private void Fail(Exception error, DtlsAlert alert, bool sendAlert)
+    {
+        if (State is ProtocolState.Failed or ProtocolState.Closed)
+        {
+            return;
+        }
+
+        if (sendAlert)
+        {
+            SendAlert(alert, fatal: true);
+        }
+
+        Error = error;
+        State = ProtocolState.Failed;
+        StopTimers();
+        LogFailed(error, alert, error is DtlsException { IsRemote: true });
+    }
+
+    // Runs protocol work; a protocol fault fails the connection with its alert.
+    private void Guard(Action work)
+    {
+        try
+        {
+            work();
+        }
+        catch (DtlsException error)
+        {
+            Fail(error, sendAlert: !error.IsRemote);
+        }
+    }
+
+    private void StopTimers()
+    {
+        _flightTimed = false;
+        _retransmitAt = long.MaxValue;
+        _handshakeDeadline = long.MaxValue;
+    }
+
+    private long Ticks(TimeSpan span) => (long)(span.TotalSeconds * _time.TimestampFrequency);
+
+    // Checks the peer's certificate chain and keeps the certificate.
+    private void AcceptRemoteCertificate(CertificateMessage certificate)
+    {
+        X509Certificate2 accepted = _settings.Validator.Validate(_owner, certificate.Chain);
+        _remoteCertificate?.Dispose();
+        _remoteCertificate = accepted;
+    }
+
+    // Hands the records of a datagram to the protocol without a closure.
+    private readonly ref struct RecordDispatcher(DtlsProtocol protocol, List<Range> applicationData)
+        : IRecordHandler
+    {
+        public void OnRecord(
+            ContentType type,
+            ushort epoch,
+            ulong sequence,
+            ReadOnlySpan<byte> payload,
+            int offset
+        ) => protocol.OnRecord(type, epoch, sequence, payload, offset, applicationData);
+    }
+}

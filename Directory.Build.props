@@ -1,0 +1,26 @@
+<Project>
+  <PropertyGroup>
+    <!-- Reproducibility is delegated to DotNet.ReproducibleBuilds rather than restated here: it
+         embeds the portable PDB with its Source Link map, sets ContinuousIntegrationBuild on CI,
+         and publishes the repository URL, branch and commit into the nuspec. -->
+    <TargetFramework>net11.0</TargetFramework>
+    <!-- Pinned, not "latest". global.json rolls forward to a newer feature band, and "latest" would
+         then quietly compile against a different language version. Raise this deliberately. -->
+    <LangVersion>15.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- .NET 11 runtime async: the runtime suspends and resumes async methods instead of
+         compiler-generated state machines. -->
+    <Features>runtime-async=on</Features>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <Authors>Agash</Authors>
+    <Company>Agash</Company>
+    <Copyright>Copyright (c) Agash 2026</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryType>git</RepositoryType>
+    <RepositoryUrl>https://github.com/Agash/Dtls.NET</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/Agash/Dtls.NET</PackageProjectUrl>
+  </PropertyGroup>
+</Project>
