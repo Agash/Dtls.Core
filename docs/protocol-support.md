@@ -41,7 +41,7 @@ feeds thousands of random and mutated datagrams during and after handshakes):
 - **Fragments may overlap but not disagree.** A contradicting fragment in an authenticated record is an
   illegal_parameter; in an unprotected one it starts the message over, since either may be forged.
 - **Epochs and sequence numbers never wrap.** A 48-bit record sequence number, a 16-bit message_seq or
-  an epoch that would wrap ends the connection with a DtlsException. Dtls.NET counts epochs in 16 bits,
+  an epoch that would wrap ends the connection with a DtlsException. Dtls.Core counts epochs in 16 bits,
   which allows 65,532 DTLS 1.3 key updates.
 - **DTLS 1.3 post-handshake messages come under the application keys.** Once connected, epoch 2
   carries only retransmissions of the handshake.

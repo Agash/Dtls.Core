@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Only the latest released version of Dtls.NET receives security fixes. This project is pre-1.0, so
+Only the latest released version of Dtls.Core receives security fixes. This project is pre-1.0, so
 fixes land on the current minor rather than being backported.
 
 ## Reporting a vulnerability
@@ -21,7 +21,7 @@ stay anonymous.
 
 ## Scope
 
-Dtls.NET is a security protocol implementation, so almost any defect can be a vulnerability: a
+Dtls.Core is a security protocol implementation, so almost any defect can be a vulnerability: a
 handshake that accepts what it should refuse, a record that decrypts or authenticates when it should
 not, a parser that reads out of bounds or can be made to allocate without limit, key material that
 outlives its use, or timing that depends on secret data. All of these are in scope. Weaknesses in the

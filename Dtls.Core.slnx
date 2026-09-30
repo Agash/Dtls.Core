@@ -1,0 +1,21 @@
+<Solution>
+    <Folder Name="/Solution Items/">
+        <File Path=".editorconfig" />
+        <File Path=".gitattributes" />
+        <File Path=".gitignore" />
+        <File Path="Directory.Build.props" />
+        <File Path="Directory.Packages.props" />
+        <File Path="global.json" />
+        <File Path="LICENSE" />
+        <File Path="README.md" />
+    </Folder>
+    <Folder Name="/src/">
+        <Project Path="src/Dtls.Core/Dtls.Core.csproj" />
+    </Folder>
+    <Folder Name="/samples/">
+        <Project Path="samples/Dtls.Core.Smoke/Dtls.Core.Smoke.csproj" />
+    </Folder>
+    <Folder Name="/tests/">
+        <Project Path="tests/Dtls.Core.Tests/Dtls.Core.Tests.csproj" />
+    </Folder>
+</Solution>

@@ -1,14 +1,14 @@
 # Contributing
 
-Thanks for your interest in Dtls.NET.
+Thanks for your interest in Dtls.Core.
 
 ## Building
 
 ```sh
-git clone https://github.com/Agash/Dtls.NET
-cd Dtls.NET
-dotnet build Dtls.NET.slnx
-dotnet test --solution Dtls.NET.slnx
+git clone https://github.com/Agash/Dtls.Core
+cd Dtls.Core
+dotnet build Dtls.Core.slnx
+dotnet test --solution Dtls.Core.slnx
 ```
 
 The build targets .NET 11 and treats warnings as errors.
@@ -16,7 +16,7 @@ The build targets .NET 11 and treats warnings as errors.
 ## How it is built
 
 The public API is at the top level: `DtlsConnection` drives the protocol over an `IDatagramTransport`.
-The protocol itself is in `src/Dtls.NET/Protocol` (`DtlsProtocol`, which does no I/O: it is handed
+The protocol itself is in `src/Dtls.Core/Protocol` (`DtlsProtocol`, which does no I/O: it is handed
 datagrams and the time and queues datagrams to send), the record layer in `Records`, handshake messages,
 framing and reassembly in `Handshake`, and the key schedule, PRF and signatures in `Crypto`.
 
@@ -29,7 +29,7 @@ local checkouts of these and the RFCs for reference.
 ## Tests
 
 `HandshakeTests` run both sides in memory, including over a path that loses datagrams. The interop
-tests run each platform's own DTLS against Dtls.NET and compare the keying material both export:
+tests run each platform's own DTLS against Dtls.Core and compare the keying material both export:
 
 - `OpenSslInteropTests`: OpenSSL's `s_server` and `s_client` (`DTLS_OPENSSL` names the binary; on
   macOS Homebrew's `openssl@3` is used, since `/usr/bin/openssl` is LibreSSL, which has its own test).

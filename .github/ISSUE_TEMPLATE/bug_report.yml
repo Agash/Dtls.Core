@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a problem with Dtls.NET
+description: Report a problem with Dtls.Core
 labels: [bug]
 body:
   - type: textarea
@@ -19,7 +19,7 @@ body:
   - type: input
     id: package-version
     attributes:
-      label: Dtls.NET version
+      label: Dtls.Core version
       placeholder: e.g. 0.1.0
     validations:
       required: true

@@ -1,4 +1,4 @@
-// Apple's DTLS 1.2 (Network.framework) as a peer for Dtls.NET's interop tests.
+// Apple's DTLS 1.2 (Network.framework) as a peer for Dtls.Core's interop tests.
 //
 //   swift peer.swift client <port> <identity.p12> <password>
 //   swift peer.swift server <identity.p12> <password>

@@ -46,7 +46,7 @@ jobs:
             11.0.x
 
       - name: Restore
-        run: dotnet restore Dtls.NET.slnx
+        run: dotnet restore Dtls.Core.slnx
 
       - name: Check formatting
         if: matrix.format
@@ -57,7 +57,7 @@ jobs:
           dotnet csharpier check .
 
       - name: Build
-        run: dotnet build Dtls.NET.slnx --no-restore -c Release
+        run: dotnet build Dtls.Core.slnx --no-restore -c Release
 
       # The interop tests run OpenSSL's s_server and s_client, which every runner image carries.
       - name: OpenSSL version
@@ -76,7 +76,7 @@ jobs:
 
       - name: Test
         run: >-
-          dotnet test --solution Dtls.NET.slnx --no-build -c Release
+          dotnet test --solution Dtls.Core.slnx --no-build -c Release
           --coverage --coverage-settings coverage.settings.xml --coverage-output-format cobertura --coverage-output coverage.cobertura.xml
 
       - name: Summarize coverage
@@ -110,9 +110,9 @@ jobs:
       - name: Native AOT publish and run
         shell: pwsh
         run: |
-          dotnet publish samples/Dtls.NET.Smoke/Dtls.NET.Smoke.csproj -r ${{ matrix.rid }} -c Release -o artifacts/smoke
+          dotnet publish samples/Dtls.Core.Smoke/Dtls.Core.Smoke.csproj -r ${{ matrix.rid }} -c Release -o artifacts/smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $exe = if ($IsWindows) { './artifacts/smoke/Dtls.NET.Smoke.exe' } else { './artifacts/smoke/Dtls.NET.Smoke' }
+          $exe = if ($IsWindows) { './artifacts/smoke/Dtls.Core.Smoke.exe' } else { './artifacts/smoke/Dtls.Core.Smoke' }
           & $exe
           exit $LASTEXITCODE
 
@@ -138,7 +138,7 @@ jobs:
             11.0.x
 
       - name: Pack
-        run: dotnet pack src/Dtls.NET/Dtls.NET.csproj -c Release -o ${{ env.NuGetDirectory }}
+        run: dotnet pack src/Dtls.Core/Dtls.Core.csproj -c Release -o ${{ env.NuGetDirectory }}
 
       # A signed statement, hosted by GitHub, of which workflow and commit produced these exact
       # package files, so a download can be verified as built from this repository.
@@ -164,7 +164,7 @@ jobs:
     # Declaring an environment records a deployment, which surfaces the package on the repository page.
     environment:
       name: nuget.org
-      url: https://www.nuget.org/packages/Dtls.NET
+      url: https://www.nuget.org/packages/Dtls.Core
     permissions:
       contents: read
       id-token: write # OIDC for nuget.org trusted publishing

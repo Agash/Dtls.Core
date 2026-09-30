@@ -1,7 +1,7 @@
-# Dtls.NET
+# Dtls.Core
 
-[![NuGet](https://img.shields.io/nuget/v/Dtls.NET.svg)](https://www.nuget.org/packages/Dtls.NET)
-[![build](https://github.com/Agash/Dtls.NET/actions/workflows/build.yml/badge.svg)](https://github.com/Agash/Dtls.NET/actions/workflows/build.yml)
+[![NuGet](https://img.shields.io/nuget/v/Dtls.Core.svg)](https://www.nuget.org/packages/Dtls.Core)
+[![build](https://github.com/Agash/Dtls.Core/actions/workflows/build.yml/badge.svg)](https://github.com/Agash/Dtls.Core/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 DTLS 1.2 ([RFC 6347](https://www.rfc-editor.org/rfc/rfc6347)) and DTLS 1.3
@@ -29,7 +29,7 @@ and certificates are validated with a `RemoteCertificateValidationCallback`.
 ## Install
 
 ```sh
-dotnet add package Dtls.NET
+dotnet add package Dtls.Core
 ```
 
 ## WebRTC-style peers
@@ -100,8 +100,8 @@ DtlsConnection connection = await factory.ConnectAsync(transport, "webrtc", canc
 ## Statistics and metrics
 
 `DtlsConnection.Statistics` counts datagrams, dropped records, authentication failures, retransmissions
-and application data per connection. The meter `Dtls.NET` (for `dotnet-counters` or OpenTelemetry's
-`AddMeter("Dtls.NET")`) records `dtls.handshake.duration` by version, role and outcome, and counts
+and application data per connection. The meter `Dtls.Core` (for `dotnet-counters` or OpenTelemetry's
+`AddMeter("Dtls.Core")`) records `dtls.handshake.duration` by version, role and outcome, and counts
 retransmissions and dropped records. Nothing secret is logged or measured.
 
 ## Versions
@@ -138,7 +138,7 @@ does not finish within `HandshakeTimeout` throws `TimeoutException`. Once connec
 The tests run handshakes, compare exported keys and exchange data with the platforms' own DTLS
 implementations, in both roles where the peer has them:
 
-| Peer | Versions | Dtls.NET as client | Dtls.NET as server | DTLS-SRTP |
+| Peer | Versions | Dtls.Core as client | Dtls.Core as server | DTLS-SRTP |
 | --- | --- | --- | --- | --- |
 | wolfSSL 5.9 (Linux) | 1.3, 1.2, and either | yes | yes | yes |
 | OpenSSL 3 (Linux, macOS) | 1.2 | yes | yes | yes |
@@ -146,8 +146,8 @@ implementations, in both roles where the peer has them:
 | Network.framework (macOS) | 1.2 | yes | yes | not in its API |
 | LibreSSL (macOS) | 1.2 | | yes, with `RequireExtendedMasterSecret` off | yes |
 
-Against a peer that speaks only DTLS 1.2, Dtls.NET's default settings negotiate 1.2. LibreSSL has no
-extended master secret, which Dtls.NET requires by default.
+Against a peer that speaks only DTLS 1.2, Dtls.Core's default settings negotiate 1.2. LibreSSL has no
+extended master secret, which Dtls.Core requires by default.
 
 ## Protocol support
 

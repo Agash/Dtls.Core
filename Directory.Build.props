@@ -20,7 +20,7 @@
     <Copyright>Copyright (c) Agash 2026</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryType>git</RepositoryType>
-    <RepositoryUrl>https://github.com/Agash/Dtls.NET</RepositoryUrl>
-    <PackageProjectUrl>https://github.com/Agash/Dtls.NET</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Agash/Dtls.Core</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/Agash/Dtls.Core</PackageProjectUrl>
   </PropertyGroup>
 </Project>
