@@ -44,7 +44,10 @@ public sealed class DiagnosticsTests
         using MeterListener listener = new();
         listener.InstrumentPublished = (instrument, l) =>
         {
-            if (instrument.Meter.Name == "Dtls.Core" && instrument.Name == "dtls.handshake.duration")
+            if (
+                instrument.Meter.Name == "Dtls.Core"
+                && instrument.Name == "dtls.handshake.duration"
+            )
             {
                 l.EnableMeasurementEvents(instrument);
             }
