@@ -60,17 +60,24 @@ public sealed class AdversarialTests
         await using (client)
         await using (server)
         {
+            // Each request asks the peer to update too, so both sides move one epoch per round; the
+            // peer's answering update lands after the request, so each round waits for both.
+            int start = (int)client.Epochs.Write;
             for (int i = 0; i < 5; i++)
             {
                 await (i % 2 == 0 ? client : server).RequestKeyUpdateAsync();
                 await TalkAsync(client, server, rounds: 1);
+                int expected = start + i + 1;
                 await EventuallyAsync(() =>
-                    client.Epochs.Write == server.Epochs.Read
+                    client.Epochs.Write == expected
+                    && server.Epochs.Write == expected
+                    && client.Epochs.Write == server.Epochs.Read
                     && server.Epochs.Write == client.Epochs.Read
                 );
             }
 
-            Assert.IsGreaterThanOrEqualTo(8, (int)client.Epochs.Write);
+            Assert.AreEqual(start + 5, (int)client.Epochs.Write);
+            await TalkAsync(client, server, rounds: 1);
         }
     }
 
