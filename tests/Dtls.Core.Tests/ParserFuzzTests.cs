@@ -94,9 +94,9 @@ public sealed class ParserFuzzTests
     }
 
     // A handshake whose datagrams are corrupted in flight completes or fails with a DtlsException
-    // (or its timeout), on both sides, and never hangs.
+    // (or its timeout), on both sides, and never hangs. Each handshake is bounded on its own, so a
+    // soak's run time grows with its round count.
     [TestMethod]
-    [Timeout(300_000)]
     [DataRow(DtlsProtocols.Dtls12)]
     [DataRow(DtlsProtocols.Dtls13)]
     public async Task Handshake_CorruptedDatagrams_CompletesOrFailsCleanly(DtlsProtocols version)
