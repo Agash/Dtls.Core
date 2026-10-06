@@ -34,6 +34,11 @@ internal readonly record struct OutgoingDatagram(byte[] Buffer, int Length)
 // bits of the sequence number masked with the epoch's sequence key, and the length; the content type
 // travels inside the encryption.
 //
+// Once connection IDs are agreed (RFC 9146, RFC 9147 §9), every protected record carries the receiver's
+// CID: a DTLS 1.2 record as tls12_cid with its real type inside the encryption and RFC 9146 §5.3's
+// additional data, a DTLS 1.3 record behind the unified header's C bit. A protected record without the
+// expected CID is dropped. Protected records also keep to the peer's record size limit (RFC 8449).
+//
 // Epochs are kept per direction. A write epoch stays usable after the next one is installed because a
 // retransmitted flight can span the change (the client's last DTLS 1.2 flight is epoch 0 up to its
 // ChangeCipherSpec and epoch 1 after it). Earlier read epochs stay readable so a peer's retransmission
@@ -48,7 +53,23 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
     private const int UnifiedHeaderSize = 5;
     private const int SequenceMaskSource = 16;
 
+    // RFC 9146 §5: the sequence-number placeholder and the CID content type's place in the additional data.
+    private const int CidAdditionalDataFixed = 23;
+
+    // The largest plaintext of a protected record (RFC 8449 §4): 2^14 in DTLS 1.2, 2^14 + 1 with DTLS
+    // 1.3's inner content type.
+    public const int ProtocolRecordLimit = 1 << 14;
+
     private readonly List<WriteState> _write = [new(0, null, null)];
+    private byte[] _sendCid = [];
+    private byte[] _receiveCid = [];
+
+    // Every CID this side has given the peer and still accepts: the first agreed in the handshake and,
+    // in DTLS 1.3, those sent in NewConnectionId since (RFC 9147 §9). They share one length, which is how
+    // a record's CID is delimited.
+    private readonly List<byte[]> _receiveCids = [];
+    private int _peerRecordLimit = ProtocolRecordLimit + 1;
+    private (ushort Epoch, ulong Sequence) _newest;
     private readonly List<ReadState> _read = [new(0, null, null)];
     private readonly Queue<OutgoingDatagram> _datagrams = [];
     private byte[]? _building;
@@ -62,6 +83,85 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
         Flush();
         MaximumDatagram = size;
     }
+
+    // The CID the peer chose to receive, which this side's protected records carry, and the one this
+    // side chose, which the peer's carry; empty for none (RFC 9146 §3).
+    public void UseConnectionIds(byte[] send, byte[] receive)
+    {
+        Flush();
+        _sendCid = send;
+        _receiveCid = receive;
+        _receiveCids.Clear();
+        _receiveCids.Add(receive);
+    }
+
+    // DTLS 1.3: another CID the peer may put in its records, of the same length as the first.
+    public void AcceptConnectionId(byte[] cid)
+    {
+        if (cid.Length != _receiveCid.Length)
+        {
+            throw new ArgumentException(
+                "A connection ID must have the agreed length.",
+                nameof(cid)
+            );
+        }
+
+        _receiveCids.Add(cid);
+    }
+
+    // DTLS 1.3: the CID this side's records carry from now on, one the peer provided.
+    public void UseSendConnectionId(byte[] cid)
+    {
+        Flush();
+        _sendCid = cid;
+    }
+
+    private bool IsReceiveCid(ReadOnlySpan<byte> cid)
+    {
+        if (_receiveCids.Count == 0)
+        {
+            // No CIDs agreed: records carry none.
+            return cid.IsEmpty;
+        }
+
+        foreach (byte[] accepted in _receiveCids)
+        {
+            if (cid.SequenceEqual(accepted))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public ReadOnlySpan<byte> SendConnectionId => _sendCid;
+
+    public ReadOnlySpan<byte> ReceiveConnectionId => _receiveCid;
+
+    // The peer's record size limit: the most plaintext, inner content type included, its protected
+    // records may hold (RFC 8449 §4).
+    public void LimitRecords(int peerLimit) => _peerRecordLimit = peerLimit;
+
+    public int PeerRecordLimit => _peerRecordLimit;
+
+    // Whether the last datagram read held a protected record newer, by epoch and sequence number, than
+    // any before it: RFC 9146 §6's condition for following a peer to a new address.
+    public bool AdvancedNewest { get; private set; }
+
+    // The most a record in an epoch can carry: what the datagram limit leaves after the protection, and
+    // for a protected record no more than the peer's record size limit.
+    public int MaximumPlaintext(ushort epoch)
+    {
+        WriteState state = FindWrite(epoch);
+        int fits = MaximumDatagram - Overhead(epoch);
+        return state.Cipher13 is not null ? Math.Min(fits, _peerRecordLimit - 1)
+            : state.Cipher is not null
+                ? Math.Min(fits, CidIn12 ? _peerRecordLimit - 1 : _peerRecordLimit)
+            : fits;
+    }
+
+    private bool CidIn12 => _sendCid.Length > 0;
 
     public ushort WriteEpoch => _write[^1].Epoch;
 
@@ -97,8 +197,10 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
     {
         WriteState state = FindWrite(epoch);
         return state.Cipher13 is not null
-            ? UnifiedHeaderSize + 1 + RecordCipher13.TagLength
-            : RecordHeader.Size + (state.Cipher?.Overhead ?? 0);
+                ? UnifiedHeaderSize + _sendCid.Length + 1 + RecordCipher13.TagLength
+            : state.Cipher is null ? RecordHeader.Size
+            : CidIn12 ? RecordHeader.Size + _sendCid.Length + state.Cipher.Overhead + 1
+            : RecordHeader.Size + state.Cipher.Overhead;
     }
 
     // DTLS 1.2: the next epoch's keys.
@@ -143,6 +245,19 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
     {
         WriteState state = FindWrite(epoch);
         int size = Overhead(epoch) + payload.Length;
+        // RFC 8449 §4: a protected record's plaintext, the inner content type included, stays within the
+        // peer's limit.
+        bool inner = state.Cipher13 is not null || (state.Cipher is not null && CidIn12);
+        if (
+            (state.Cipher13 is not null || state.Cipher is not null)
+            && payload.Length + (inner ? 1 : 0) > _peerRecordLimit
+        )
+        {
+            throw new InvalidOperationException(
+                $"A {payload.Length}-byte record exceeds the peer's {_peerRecordLimit}-byte record size limit."
+            );
+        }
+
         if (size > MaximumDatagram)
         {
             throw new InvalidOperationException(
@@ -167,8 +282,11 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
         _building ??= ArrayPool<byte>.Shared.Rent(MaximumDatagram);
         ulong sequence = state.NextSequence++;
         Span<byte> record = _building.AsSpan(_buildingLength, size);
-        _buildingLength += state.Cipher13 is not null
-            ? Write13(state.Cipher13, type, epoch, sequence, payload, record)
+        _buildingLength +=
+            state.Cipher13 is not null
+                ? Write13(state.Cipher13, type, epoch, sequence, payload, record)
+            : state.Cipher is not null && CidIn12
+                ? Write12Cid(state.Cipher, type, epoch, sequence, payload, record)
             : Write12(state.Cipher, type, epoch, sequence, payload, record);
         return sequence;
     }
@@ -198,6 +316,7 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
     public void Read<THandler>(Span<byte> datagram, ref THandler handler)
         where THandler : IRecordHandler, allows ref struct
     {
+        AdvancedNewest = false;
         int consumed = 0;
         while (consumed < datagram.Length)
         {
@@ -275,9 +394,64 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
         return RecordHeader.Size + length;
     }
 
+    // RFC 9146 §4: DTLSInnerPlaintext (content || real type) sealed in place behind a header with the
+    // tls12_cid type and the CID, with §5.3's additional data.
+    private int Write12Cid(
+        RecordCipher cipher,
+        ContentType type,
+        ushort epoch,
+        ulong sequence,
+        ReadOnlySpan<byte> payload,
+        Span<byte> record
+    )
+    {
+        int headerSize = RecordHeader.Size + _sendCid.Length;
+        Span<byte> fragment = record[headerSize..];
+        Span<byte> inner = fragment.Slice(cipher.PlaintextOffset, payload.Length + 1);
+        payload.CopyTo(inner);
+        inner[^1] = (byte)type;
+        Span<byte> additional = stackalloc byte[CidAdditionalDataFixed + _sendCid.Length];
+        CidAdditionalData(epoch, sequence, _sendCid, inner.Length, additional);
+        int length = cipher.Seal(((ulong)epoch << 48) | sequence, additional, inner, fragment);
+        record[0] = (byte)ContentType.Tls12Cid;
+        BinaryPrimitives.WriteUInt16BigEndian(record[1..], ProtocolVersion.Dtls12);
+        BinaryPrimitives.WriteUInt16BigEndian(record[3..], epoch);
+        BinaryPrimitives.WriteUInt16BigEndian(record[5..], (ushort)(sequence >> 32));
+        BinaryPrimitives.WriteUInt32BigEndian(record[7..], (uint)sequence);
+        _sendCid.CopyTo(record[11..]);
+        BinaryPrimitives.WriteUInt16BigEndian(record[(11 + _sendCid.Length)..], (ushort)length);
+        return headerSize + length;
+    }
+
+    // seq_num_placeholder + tls12_cid + cid_length + tls12_cid + version + epoch + sequence_number + cid
+    // + length_of_DTLSInnerPlaintext (RFC 9146 §5.3).
+    private static void CidAdditionalData(
+        ushort epoch,
+        ulong sequence,
+        ReadOnlySpan<byte> cid,
+        int innerLength,
+        Span<byte> destination
+    )
+    {
+        destination[..8].Fill(0xFF);
+        destination[8] = (byte)ContentType.Tls12Cid;
+        destination[9] = (byte)cid.Length;
+        destination[10] = (byte)ContentType.Tls12Cid;
+        BinaryPrimitives.WriteUInt16BigEndian(destination[11..], ProtocolVersion.Dtls12);
+        BinaryPrimitives.WriteUInt16BigEndian(destination[13..], epoch);
+        BinaryPrimitives.WriteUInt16BigEndian(destination[15..], (ushort)(sequence >> 32));
+        BinaryPrimitives.WriteUInt32BigEndian(destination[17..], (uint)sequence);
+        cid.CopyTo(destination[21..]);
+        BinaryPrimitives.WriteUInt16BigEndian(
+            destination[(21 + cid.Length)..],
+            (ushort)innerLength
+        );
+    }
+
     // DTLSInnerPlaintext (content || type), sealed behind a unified header whose sequence number is
-    // then masked. The additional data is the header with the sequence number in the clear.
-    private static int Write13(
+    // then masked. The additional data is the header, CID included, with the sequence number in the
+    // clear.
+    private int Write13(
         RecordCipher13 cipher,
         ContentType type,
         ushort epoch,
@@ -286,22 +460,25 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
         Span<byte> record
     )
     {
-        Span<byte> header = record[..UnifiedHeaderSize];
-        header[0] = (byte)(UnifiedHeaderBits | (epoch & 0x03));
-        BinaryPrimitives.WriteUInt16BigEndian(header[1..], (ushort)sequence);
+        int cid = _sendCid.Length;
+        int headerSize = UnifiedHeaderSize + cid;
+        Span<byte> header = record[..headerSize];
+        header[0] = (byte)(UnifiedHeaderBits | (cid > 0 ? 0x10 : 0) | (epoch & 0x03));
+        _sendCid.CopyTo(header[1..]);
+        BinaryPrimitives.WriteUInt16BigEndian(header[(1 + cid)..], (ushort)sequence);
         BinaryPrimitives.WriteUInt16BigEndian(
-            header[3..],
+            header[(3 + cid)..],
             (ushort)(payload.Length + 1 + RecordCipher13.TagLength)
         );
-        Span<byte> body = record[UnifiedHeaderSize..];
+        Span<byte> body = record[headerSize..];
         payload.CopyTo(body);
         body[payload.Length] = (byte)type;
         int length = cipher.Seal(sequence, header, body, payload.Length + 1);
         Span<byte> mask = stackalloc byte[2];
         cipher.Mask(body[..SequenceMaskSource], mask);
-        header[1] ^= mask[0];
-        header[2] ^= mask[1];
-        return UnifiedHeaderSize + length;
+        header[1 + cid] ^= mask[0];
+        header[2 + cid] ^= mask[1];
+        return headerSize + length;
     }
 
     // A record with the 13-byte header; returns where the next record starts, or -1.
@@ -315,6 +492,11 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
         }
 
         ContentType type = (ContentType)rest[0];
+        if (type == ContentType.Tls12Cid)
+        {
+            return Read12Cid(datagram, at, ref handler);
+        }
+
         ushort version = BinaryPrimitives.ReadUInt16BigEndian(rest[1..]);
         ushort epoch = BinaryPrimitives.ReadUInt16BigEndian(rest[3..]);
         ulong sequence =
@@ -372,6 +554,12 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
             return -1;
         }
 
+        // A protected record must carry this side's CID once one was agreed (RFC 9146 §3).
+        if (state.Cipher is not null && _receiveCid.Length > 0)
+        {
+            return -1;
+        }
+
         // Replay protection needs authentication: an unprotected record proves nothing about its
         // sequence number, and letting one move the window would let a single forged datagram with a
         // high number make every genuine record after it look old. Duplicate unprotected handshake
@@ -394,7 +582,101 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
         }
 
         state.Window.MarkSeen(sequence);
+        NoteNewest(epoch, sequence);
         return length;
+    }
+
+    // A tls12_cid record (RFC 9146 §4); returns where the next record starts, or -1 when it cannot be
+    // delimited: without an agreed CID its length is unknown.
+    private int Read12Cid<THandler>(Span<byte> datagram, int at, ref THandler handler)
+        where THandler : IRecordHandler, allows ref struct
+    {
+        int cid = _receiveCid.Length;
+        Span<byte> rest = datagram[at..];
+        int headerSize = RecordHeader.Size + cid;
+        if (cid == 0 || rest.Length < headerSize)
+        {
+            return -1;
+        }
+
+        ushort epoch = BinaryPrimitives.ReadUInt16BigEndian(rest[3..]);
+        ulong sequence =
+            ((ulong)BinaryPrimitives.ReadUInt16BigEndian(rest[5..]) << 32)
+            | BinaryPrimitives.ReadUInt32BigEndian(rest[7..]);
+        int length = BinaryPrimitives.ReadUInt16BigEndian(rest[(11 + cid)..]);
+        if (length > rest.Length - headerSize || length > RecordHeader.MaximumFragment + 256)
+        {
+            return -1;
+        }
+
+        int fragmentAt = at + headerSize;
+        int next = fragmentAt + length;
+        ReadState? state = FindRead(epoch);
+        if (
+            !IsReceiveCid(rest.Slice(11, cid))
+            || BinaryPrimitives.ReadUInt16BigEndian(rest[1..]) != ProtocolVersion.Dtls12
+            || state?.Cipher is not { } cipher
+            || !state.Window.IsFresh(sequence)
+        )
+        {
+            Dropped++;
+            return next;
+        }
+
+        Span<byte> fragment = datagram.Slice(fragmentAt, length);
+        Span<byte> additional = stackalloc byte[CidAdditionalDataFixed + cid];
+        CidAdditionalData(
+            epoch,
+            sequence,
+            rest.Slice(11, cid),
+            length - cipher.Overhead,
+            additional
+        );
+        int opened = cipher.Open(
+            ((ulong)epoch << 48) | sequence,
+            additional,
+            fragment,
+            out int offset
+        );
+        if (opened < 0)
+        {
+            AuthenticationFailures++;
+            Dropped++;
+            return next;
+        }
+
+        // The real type is the last non-zero byte; zeros after it are padding.
+        int typeAt = opened - 1;
+        while (typeAt >= 0 && fragment[offset + typeAt] == 0)
+        {
+            typeAt--;
+        }
+
+        if (typeAt < 0)
+        {
+            Dropped++;
+            return next;
+        }
+
+        state.Window.MarkSeen(sequence);
+        NoteNewest(epoch, sequence);
+        handler.OnRecord(
+            (ContentType)fragment[offset + typeAt],
+            epoch,
+            sequence,
+            fragment.Slice(offset, typeAt),
+            fragmentAt + offset
+        );
+        return next;
+    }
+
+    private void NoteNewest(ushort epoch, ulong sequence)
+    {
+        if ((epoch, sequence).CompareTo(_newest) > 0)
+        {
+            _newest = (epoch, sequence);
+            AdvancedNewest = true;
+        }
     }
 
     // A record with a unified header (RFC 9147 §4); returns where the next record starts, or -1.
@@ -403,22 +685,25 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
     {
         Span<byte> rest = datagram[at..];
         byte flags = rest[0];
-        if ((flags & 0x10) != 0)
+        bool hasCid = (flags & 0x10) != 0;
+        if (hasCid != (_receiveCid.Length > 0))
         {
-            // A connection ID, which was not negotiated: the record cannot be delimited.
+            // A CID that was not agreed cannot be delimited; a missing one that was is invalid (RFC
+            // 9147 §4). Either way nothing after it can be trusted.
             return -1;
         }
 
+        int cid = _receiveCid.Length;
         int sequenceLength = (flags & 0x08) != 0 ? 2 : 1;
         bool hasLength = (flags & 0x04) != 0;
-        int headerLength = 1 + sequenceLength + (hasLength ? 2 : 0);
-        if (rest.Length < headerLength)
+        int headerLength = 1 + cid + sequenceLength + (hasLength ? 2 : 0);
+        if (rest.Length < headerLength || !IsReceiveCid(rest.Slice(1, cid)))
         {
             return -1;
         }
 
         int length = hasLength
-            ? BinaryPrimitives.ReadUInt16BigEndian(rest[(1 + sequenceLength)..])
+            ? BinaryPrimitives.ReadUInt16BigEndian(rest[(1 + cid + sequenceLength)..])
             : rest.Length - headerLength;
         if (length > rest.Length - headerLength)
         {
@@ -437,12 +722,12 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
 
         Span<byte> mask = stackalloc byte[2];
         state.Cipher13!.Mask(ciphertext[..SequenceMaskSource], mask);
-        header[1] ^= mask[0];
-        ulong partial = header[1];
+        header[1 + cid] ^= mask[0];
+        ulong partial = header[1 + cid];
         if (sequenceLength == 2)
         {
-            header[2] ^= mask[1];
-            partial = BinaryPrimitives.ReadUInt16BigEndian(header[1..]);
+            header[2 + cid] ^= mask[1];
+            partial = BinaryPrimitives.ReadUInt16BigEndian(header[(1 + cid)..]);
         }
 
         ulong sequence = Reconstruct(state.Window.NextExpected, partial, 8 * sequenceLength);
@@ -471,6 +756,7 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
         }
 
         state.Window.MarkSeen(sequence);
+        NoteNewest(state.Epoch, sequence);
         handler.OnRecord(
             (ContentType)ciphertext[typeAt],
             state.Epoch,

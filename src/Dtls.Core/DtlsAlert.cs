@@ -48,6 +48,9 @@ public enum DtlsAlert : byte
     /// <summary>A cryptographic operation failed, including a Finished that did not verify.</summary>
     DecryptError = 51,
 
+    /// <summary>The peer asked for more connection IDs than this side gives (RFC 9147 section 9).</summary>
+    TooManyCidsRequested = 52,
+
     /// <summary>The peer's protocol version is not supported.</summary>
     ProtocolVersion = 70,
 

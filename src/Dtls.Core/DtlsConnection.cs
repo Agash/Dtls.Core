@@ -99,7 +99,10 @@ public sealed class DtlsConnection : IAsyncDisposable
     /// </summary>
     public SrtpKeyingMaterial? SrtpKeyingMaterial => _protocol.SrtpKeyingMaterial;
 
-    /// <summary>The most application data one <see cref="SendAsync"/> carries: the datagram limit less the record's overhead.</summary>
+    /// <summary>
+    /// The most application data one <see cref="SendAsync"/> carries: the datagram limit less the
+    /// record's overhead, and no more than the peer's record size limit.
+    /// </summary>
     public int MaximumApplicationDataSize
     {
         get
@@ -107,6 +110,51 @@ public sealed class DtlsConnection : IAsyncDisposable
             lock (_lock)
             {
                 return _protocol.MaximumApplicationDataSize;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The connection ID this side's protected records carry, as the peer asked for (RFC 9146); empty
+    /// when the peer asked for none or the IDs were not agreed.
+    /// </summary>
+    public ReadOnlyMemory<byte> RemoteConnectionId
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _protocol.RemoteConnectionId;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The connection ID the peer's protected records carry, as this side asked for; empty when this side
+    /// asked for none or the IDs were not agreed.
+    /// </summary>
+    public ReadOnlyMemory<byte> LocalConnectionId
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _protocol.LocalConnectionId;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The most plaintext the peer takes in a protected record (RFC 8449): what it advertised, or the
+    /// protocol's limit when it advertised nothing. <see cref="MaximumApplicationDataSize"/> keeps to it.
+    /// </summary>
+    public int PeerRecordSizeLimit
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _protocol.PeerRecordSizeLimit;
             }
         }
     }
@@ -292,6 +340,87 @@ public sealed class DtlsConnection : IAsyncDisposable
         Export(label, context, useContext: true, destination);
     }
 
+    /// <summary>
+    /// The peer's spare connection IDs this side can switch to with <see cref="TryUseNextConnectionId"/>
+    /// (DTLS 1.3, RFC 9147 section 9).
+    /// </summary>
+    public int SpareConnectionIds
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _protocol.SpareConnectionIds;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gives the peer more connection IDs to put in the records it sends (DTLS 1.3 NewConnectionId, RFC
+    /// 9147 section 9): spares it can switch to on a new path, or, with
+    /// <paramref name="useImmediately"/>, one it must use at once. The message is sent and retransmitted
+    /// until the peer acknowledges it.
+    /// </summary>
+    /// <param name="count">How many, 1 to 8.</param>
+    /// <param name="useImmediately">Whether the peer must switch to the first at once.</param>
+    /// <param name="cancellationToken">Cancels sending.</param>
+    /// <returns>A task that completes once the message is handed to the transport.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// The association is not DTLS 1.3 with connection IDs agreed, or this side receives an empty one.
+    /// </exception>
+    public async ValueTask IssueConnectionIdsAsync(
+        int count,
+        bool useImmediately = false,
+        CancellationToken cancellationToken = default
+    )
+    {
+        lock (_lock)
+        {
+            _protocol.IssueConnectionIds(count, useImmediately);
+            Observe();
+        }
+
+        await FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Asks the peer for spare connection IDs (DTLS 1.3 RequestConnectionId, RFC 9147 section 9), so this
+    /// side has one to switch to when its path changes. One request is outstanding at a time.
+    /// </summary>
+    /// <param name="count">How many, 1 to 255.</param>
+    /// <param name="cancellationToken">Cancels sending.</param>
+    /// <returns>A task that completes once the request is handed to the transport.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// The association is not DTLS 1.3 with connection IDs agreed, this side sends an empty one, or an
+    /// earlier request is unanswered.
+    /// </exception>
+    public async ValueTask RequestConnectionIdsAsync(
+        int count,
+        CancellationToken cancellationToken = default
+    )
+    {
+        lock (_lock)
+        {
+            _protocol.RequestConnectionIds(count);
+            Observe();
+        }
+
+        await FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Switches the connection ID this side's records carry to the peer's next spare, which RFC 9147
+    /// section 9 asks for when sending on a new path, so the paths cannot be linked by their CID.
+    /// </summary>
+    /// <returns>False when the peer gave no spare.</returns>
+    public bool TryUseNextConnectionId()
+    {
+        lock (_lock)
+        {
+            return _protocol.TryUseNextConnectionId();
+        }
+    }
+
     // For tests: a DTLS 1.3 KeyUpdate, asking the peer to update its keys too.
     internal async ValueTask RequestKeyUpdateAsync()
     {
@@ -423,6 +552,18 @@ public sealed class DtlsConnection : IAsyncDisposable
                 {
                     _applicationData.Clear();
                     _protocol.Receive(buffer.AsSpan(0, length), _applicationData);
+                    if (
+                        _protocol.PeerMayHaveMoved
+                        && _transport is IMobileDatagramTransport mobile
+                        && mobile.FollowLastSender()
+                    )
+                    {
+                        _protocol.LogPeerMoved(
+                            mobile is UdpDatagramTransport udp
+                                ? udp.RemoteEndPoint.ToString()
+                                : mobile.GetType().Name
+                        );
+                    }
                     foreach (Range range in _applicationData)
                     {
                         ReceivedRecord record = ReceivedRecord.Copy(buffer.AsSpan(range));

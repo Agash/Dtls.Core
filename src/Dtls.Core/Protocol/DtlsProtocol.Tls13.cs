@@ -85,9 +85,7 @@ internal sealed partial class DtlsProtocol
         }
 
         // As many record numbers as fit one record, the most recent first.
-        int room =
-            (_records.MaximumDatagram - _records.Overhead(_records.WriteEpoch) - 2)
-            / AckMessage.EntrySize;
+        int room = (_records.MaximumPlaintext(_records.WriteEpoch) - 2) / AckMessage.EntrySize;
         List<(ushort Epoch, ulong Sequence)> acknowledged =
             _handshakeRecords.Count <= room ? _handshakeRecords : _handshakeRecords[^room..];
         _ = _records.Write(ContentType.Ack, _records.WriteEpoch, AckMessage.Encode(acknowledged));
@@ -128,7 +126,14 @@ internal sealed partial class DtlsProtocol
             }
         }
 
-        if (_flight is { } flight && !ReferenceEquals(flight, _keyUpdate) && _flightTimed)
+        AcknowledgeConnectionIdFlight(records);
+
+        if (
+            _flight is { } flight
+            && !ReferenceEquals(flight, _keyUpdate)
+            && !ReferenceEquals(flight, _cidFlight)
+            && _flightTimed
+        )
         {
             flight.Acknowledge(records);
             if (flight.IsAcknowledged)
@@ -136,6 +141,8 @@ internal sealed partial class DtlsProtocol
                 _flightTimed = false;
             }
         }
+
+        SendWaitingPostHandshake();
     }
 
     // After the handshake: KeyUpdate (RFC 9147 §8) and the server's NewSessionTicket, which Dtls.Core
@@ -159,6 +166,12 @@ internal sealed partial class DtlsProtocol
                 return;
             case HandshakeType.NewSessionTicket when Role == DtlsRole.Client:
                 return;
+            case HandshakeType.NewConnectionId:
+                ReceiveNewConnectionId(message.Body);
+                return;
+            case HandshakeType.RequestConnectionId:
+                ReceiveRequestConnectionId(message.Body);
+                return;
             default:
                 throw DtlsException.Unexpected($"{message.Type} after the handshake");
         }
@@ -175,6 +188,12 @@ internal sealed partial class DtlsProtocol
             || _records.WriteEpoch == ushort.MaxValue
         )
         {
+            return;
+        }
+
+        if (PostHandshakeBusy)
+        {
+            _postHandshakeWaiting.Enqueue(() => SendKeyUpdate(requestUpdate));
             return;
         }
 
@@ -342,6 +361,8 @@ internal sealed partial class DtlsProtocol
             );
         }
 
+        // RFC 8449 §4: in DTLS 1.3 the server's limit travels in EncryptedExtensions.
+        AnswerRecordSizeLimit(extensions);
         return extensions;
     }
 

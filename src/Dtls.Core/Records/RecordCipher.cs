@@ -6,7 +6,9 @@ namespace Dtls.Core.Records;
 
 // Protects and opens the records of one epoch in one direction with the cipher suite's AEAD. The
 // additional data binds each record to its epoch and sequence number, content type, version and
-// length (RFC 5246 §6.2.3.3 with DTLS's 64-bit epoch-and-sequence number, RFC 6347 §4.1.2.1).
+// length (RFC 5246 §6.2.3.3 with DTLS's 64-bit epoch-and-sequence number, RFC 6347 §4.1.2.1); a record
+// carrying a connection ID binds it with RFC 9146 §5.3's additional data instead, which the record layer
+// builds and passes in.
 internal abstract class RecordCipher : IDisposable
 {
     protected const int AdditionalDataLength = 13;
@@ -14,6 +16,10 @@ internal abstract class RecordCipher : IDisposable
 
     // What a record carries besides its plaintext.
     public abstract int Overhead { get; }
+
+    // Where the plaintext starts inside the protected fragment: after an explicit nonce, if any. A
+    // plaintext written there can be sealed in place.
+    public abstract int PlaintextOffset { get; }
 
     public static RecordCipher Create(
         CipherSuiteInfo suite,
@@ -27,18 +33,40 @@ internal abstract class RecordCipher : IDisposable
         };
 
     // Writes the protected fragment for the plaintext; returns its length.
-    public abstract int Seal(
+    public int Seal(
         ulong epochAndSequence,
         ContentType type,
         ReadOnlySpan<byte> plaintext,
         Span<byte> fragment
-    );
+    )
+    {
+        Span<byte> additional = stackalloc byte[AdditionalDataLength];
+        AdditionalData(epochAndSequence, type, plaintext.Length, additional);
+        return Seal(epochAndSequence, additional, plaintext, fragment);
+    }
 
     // Opens a protected fragment in place. The plaintext is left at fragment[offset..offset + length];
     // returns its length, or -1 when the record does not authenticate.
+    public int Open(ulong epochAndSequence, ContentType type, Span<byte> fragment, out int offset)
+    {
+        Span<byte> additional = stackalloc byte[AdditionalDataLength];
+        AdditionalData(epochAndSequence, type, fragment.Length - Overhead, additional);
+        return Open(epochAndSequence, additional, fragment, out offset);
+    }
+
+    // Seals with the given additional data. The plaintext may be the fragment's own span at
+    // PlaintextOffset, which seals in place.
+    public abstract int Seal(
+        ulong epochAndSequence,
+        ReadOnlySpan<byte> additional,
+        ReadOnlySpan<byte> plaintext,
+        Span<byte> fragment
+    );
+
+    // Opens with the given additional data.
     public abstract int Open(
         ulong epochAndSequence,
-        ContentType type,
+        ReadOnlySpan<byte> additional,
         Span<byte> fragment,
         out int offset
     );
@@ -69,9 +97,11 @@ internal abstract class RecordCipher : IDisposable
 
         public override int Overhead => ExplicitNonceLength + CipherSuiteInfo.TagLength;
 
+        public override int PlaintextOffset => ExplicitNonceLength;
+
         public override int Seal(
             ulong epochAndSequence,
-            ContentType type,
+            ReadOnlySpan<byte> additional,
             ReadOnlySpan<byte> plaintext,
             Span<byte> fragment
         )
@@ -80,8 +110,6 @@ internal abstract class RecordCipher : IDisposable
             BinaryPrimitives.WriteUInt32BigEndian(nonce, _salt);
             BinaryPrimitives.WriteUInt64BigEndian(nonce[4..], epochAndSequence);
             nonce[4..].CopyTo(fragment);
-            Span<byte> additional = stackalloc byte[AdditionalDataLength];
-            AdditionalData(epochAndSequence, type, plaintext.Length, additional);
             _aes.Encrypt(
                 nonce,
                 plaintext,
@@ -94,7 +122,7 @@ internal abstract class RecordCipher : IDisposable
 
         public override int Open(
             ulong epochAndSequence,
-            ContentType type,
+            ReadOnlySpan<byte> additional,
             Span<byte> fragment,
             out int offset
         )
@@ -109,8 +137,6 @@ internal abstract class RecordCipher : IDisposable
             Span<byte> nonce = stackalloc byte[NonceLength];
             BinaryPrimitives.WriteUInt32BigEndian(nonce, _salt);
             fragment[..ExplicitNonceLength].CopyTo(nonce[4..]);
-            Span<byte> additional = stackalloc byte[AdditionalDataLength];
-            AdditionalData(epochAndSequence, type, length, additional);
             Span<byte> body = fragment.Slice(ExplicitNonceLength, length);
             try
             {
@@ -145,17 +171,17 @@ internal abstract class RecordCipher : IDisposable
 
         public override int Overhead => CipherSuiteInfo.TagLength;
 
+        public override int PlaintextOffset => 0;
+
         public override int Seal(
             ulong epochAndSequence,
-            ContentType type,
+            ReadOnlySpan<byte> additional,
             ReadOnlySpan<byte> plaintext,
             Span<byte> fragment
         )
         {
             Span<byte> nonce = stackalloc byte[NonceLength];
             Nonce(epochAndSequence, nonce);
-            Span<byte> additional = stackalloc byte[AdditionalDataLength];
-            AdditionalData(epochAndSequence, type, plaintext.Length, additional);
             _chacha.Encrypt(
                 nonce,
                 plaintext,
@@ -168,7 +194,7 @@ internal abstract class RecordCipher : IDisposable
 
         public override int Open(
             ulong epochAndSequence,
-            ContentType type,
+            ReadOnlySpan<byte> additional,
             Span<byte> fragment,
             out int offset
         )
@@ -182,8 +208,6 @@ internal abstract class RecordCipher : IDisposable
 
             Span<byte> nonce = stackalloc byte[NonceLength];
             Nonce(epochAndSequence, nonce);
-            Span<byte> additional = stackalloc byte[AdditionalDataLength];
-            AdditionalData(epochAndSequence, type, length, additional);
             Span<byte> body = fragment[..length];
             try
             {

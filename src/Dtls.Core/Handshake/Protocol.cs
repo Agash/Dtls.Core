@@ -18,6 +18,10 @@ internal enum HandshakeType : byte
     Finished = 20,
     KeyUpdate = 24,
 
+    // DTLS 1.3 connection ID management (RFC 9147 §9).
+    RequestConnectionId = 9,
+    NewConnectionId = 10,
+
     // The stand-in for a ClientHello in the transcript after a HelloRetryRequest (RFC 8446 §4.4.1).
     MessageHash = 254,
 }
@@ -33,6 +37,12 @@ internal static class ExtensionType
     public const ushort SupportedVersions = 43;
     public const ushort Cookie = 44;
     public const ushort KeyShare = 51;
+
+    // RFC 8449.
+    public const ushort RecordSizeLimit = 28;
+
+    // RFC 9146.
+    public const ushort ConnectionId = 54;
     public const ushort ApplicationLayerProtocolNegotiation = 16;
     public const ushort RenegotiationInfo = 0xFF01;
 }

@@ -46,6 +46,12 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
     private readonly Transcript _transcript = new();
     private readonly WireWriter _scratch = new(512);
     private readonly byte[] _localRandom = RandomNumberGenerator.GetBytes(32);
+
+    // The CID this side asks the peer to put in its records (RFC 9146 §3), drawn once; null when the
+    // extension is not offered, empty when offered without asking for one.
+    private readonly byte[]? _localConnectionId = settings.ConnectionIdLength is { } length
+        ? RandomNumberGenerator.GetBytes(length)
+        : null;
     private readonly TimeProvider _time = settings.TimeProvider;
 
     private byte[]? _peerRandom;
@@ -123,9 +129,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
     public SrtpKeyingMaterial? SrtpKeyingMaterial { get; private set; }
 
     public int MaximumApplicationDataSize =>
-        State == ProtocolState.Connected
-            ? _records.MaximumDatagram - _records.Overhead(_records.WriteEpoch)
-            : 0;
+        State == ProtocolState.Connected ? _records.MaximumPlaintext(_records.WriteEpoch) : 0;
 
     // Records dropped on the way in: malformed, unauthenticated, replayed or from an unknown epoch.
     public long DroppedRecords => _records.Dropped;

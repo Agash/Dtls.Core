@@ -18,6 +18,20 @@ public abstract class DtlsConnectionOptions
     /// </summary>
     public int MaximumDatagramSize { get; set; } = 1200;
 
+    /// <summary>
+    /// The length of the connection ID this side asks the peer to put in every protected record it
+    /// sends (RFC 9146; RFC 9147 section 9), so the association survives a change of the peer's
+    /// address, such as a NAT rebinding. 0 offers the extension without asking for one, which still lets
+    /// a peer that wants one get it (RFC 9147 recommends offering it); null does not offer it.
+    /// </summary>
+    public int? ConnectionIdLength { get; set; } = 0;
+
+    /// <summary>
+    /// The most plaintext this side takes in a protected record (RFC 8449), advertised to the peer:
+    /// 64 to 16384 bytes, the protocol maximum by default. A constrained receiver sets less.
+    /// </summary>
+    public int RecordSizeLimit { get; set; } = 1 << 14;
+
     /// <summary>How long the handshake may take before it fails; 30 seconds by default.</summary>
     public TimeSpan HandshakeTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
@@ -91,6 +105,24 @@ public abstract class DtlsConnectionOptions
                 nameof(MaximumDatagramSize),
                 MaximumDatagramSize,
                 "A datagram size must be between 256 and 65507 bytes."
+            );
+        }
+
+        if (ConnectionIdLength is < 0 or > 255)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(ConnectionIdLength),
+                ConnectionIdLength,
+                "A connection ID is 0 to 255 bytes."
+            );
+        }
+
+        if (RecordSizeLimit is < 64 or > 1 << 14)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(RecordSizeLimit),
+                RecordSizeLimit,
+                "A record size limit is 64 to 16384 bytes."
             );
         }
 

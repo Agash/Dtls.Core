@@ -7,7 +7,7 @@ namespace Dtls.Core.Tests;
 
 // Handshakes with wolfSSL's example client and server, which speak DTLS 1.3 (few implementations do)
 // as well as 1.2. DTLS_WOLFSSL_EXAMPLES names wolfSSL's examples directory, built with --enable-dtls13
-// --enable-srtp; without it the tests are inconclusive. Each side authenticates the other: wolfSSL
+// --enable-srtp --enable-dtlscid; without it the tests are inconclusive. Each side authenticates the other: wolfSSL
 // trusts the peer's self-signed certificate as its CA.
 [TestClass]
 [TestCategory("Interop")]
@@ -17,6 +17,9 @@ public sealed partial class WolfSslInteropTests
     private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(30);
 
     private const DtlsProtocols Both = DtlsProtocols.Dtls12 | DtlsProtocols.Dtls13;
+
+    // The CID wolfSSL's examples ask for with --cid (they need --enable-dtlscid).
+    private const string WolfSslCid = "wolfcid1";
 
     public TestContext TestContext { get; set; } = null!;
 
@@ -121,6 +124,117 @@ public sealed partial class WolfSslInteropTests
                 await client.WaitForAsync(KeyingMaterial(), TestContext.CancellationToken),
                 Export(connection)
             );
+            byte[] buffer = new byte[2048];
+            int length = await connection
+                .ReceiveAsync(buffer, TestContext.CancellationToken)
+                .AsTask()
+                .WaitAsync(s_timeout, TestContext.CancellationToken);
+            StringAssert.StartsWith(Encoding.ASCII.GetString(buffer, 0, length), "hello wolfssl!");
+            await connection.SendAsync(
+                Encoding.ASCII.GetBytes("I hear you fa shizzle!"),
+                TestContext.CancellationToken
+            );
+            _ = await client.WaitForAsync("I hear you fa shizzle!", TestContext.CancellationToken);
+        }
+        catch (Exception error)
+            when (error is not AssertFailedException and not AssertInconclusiveException)
+        {
+            Assert.Fail($"{error}\nwolfSSL:\n{client.Output}");
+        }
+    }
+
+    // Connection IDs both ways (RFC 9146, RFC 9147 section 9): wolfSSL asks for its own CID with --cid,
+    // this side for an 8-byte one; application data then crosses in records carrying each.
+    [TestMethod]
+    [DataRow("4", DtlsProtocols.Dtls13)]
+    [DataRow("3", DtlsProtocols.Dtls12)]
+    public async Task Connect_ToWolfSslServerWithConnectionIds_CarriesData(
+        string version,
+        DtlsProtocols expected
+    )
+    {
+        using X509Certificate2 own = DtlsCertificates.CreateSelfSigned();
+        using X509Certificate2 peer = DtlsCertificates.CreateSelfSigned();
+        using OpenSslInteropTests.TempPem ownPem = new(own);
+        using OpenSslInteropTests.TempPem peerPem = new(peer);
+        int port = OpenSslInteropTests.FreePort();
+        using PeerProcess server = Start(
+            "server",
+            $"-u -v {version} -p {port} -c {peerPem.Certificate} -k {peerPem.Key} -A {ownPem.Certificate} --cid {WolfSslCid}"
+        );
+        try
+        {
+            using UdpDatagramTransport transport = UdpDatagramTransport.Connect(
+                new IPEndPoint(IPAddress.Loopback, port)
+            );
+            DtlsClientConnectionOptions options = HandshakeTests.Client(own, peer);
+            options.EnabledProtocols = Both;
+            options.ConnectionIdLength = 8;
+            await using DtlsConnection connection = await DtlsConnection
+                .ConnectAsync(transport, options, TestContext.CancellationToken)
+                .AsTask()
+                .WaitAsync(s_timeout, TestContext.CancellationToken);
+
+            Assert.AreEqual(expected, connection.NegotiatedProtocol);
+            Assert.AreEqual(
+                WolfSslCid,
+                Encoding.ASCII.GetString(connection.RemoteConnectionId.Span)
+            );
+            Assert.AreEqual(8, connection.LocalConnectionId.Length);
+            await connection.SendAsync(
+                Encoding.ASCII.GetBytes("hello wolfssl!"),
+                TestContext.CancellationToken
+            );
+            byte[] buffer = new byte[2048];
+            int length = await connection
+                .ReceiveAsync(buffer, TestContext.CancellationToken)
+                .AsTask()
+                .WaitAsync(s_timeout, TestContext.CancellationToken);
+            StringAssert.StartsWith(
+                Encoding.ASCII.GetString(buffer, 0, length),
+                "I hear you fa shizzle!"
+            );
+        }
+        catch (Exception error)
+            when (error is not AssertFailedException and not AssertInconclusiveException)
+        {
+            Assert.Fail($"{error}\nwolfSSL:\n{server.Output}");
+        }
+    }
+
+    [TestMethod]
+    [DataRow("4", DtlsProtocols.Dtls13)]
+    [DataRow("3", DtlsProtocols.Dtls12)]
+    public async Task Accept_FromWolfSslClientWithConnectionIds_CarriesData(
+        string version,
+        DtlsProtocols expected
+    )
+    {
+        using X509Certificate2 own = DtlsCertificates.CreateSelfSigned();
+        using X509Certificate2 peer = DtlsCertificates.CreateSelfSigned();
+        using OpenSslInteropTests.TempPem ownPem = new(own);
+        using OpenSslInteropTests.TempPem peerPem = new(peer);
+        using ListeningTransport transport = new();
+        using PeerProcess client = Start(
+            "client",
+            $"-u -v {version} -h 127.0.0.1 -p {transport.Port} -c {peerPem.Certificate} -k {peerPem.Key} -A {ownPem.Certificate} --cid {WolfSslCid}"
+        );
+        try
+        {
+            DtlsServerConnectionOptions options = HandshakeTests.Server(own, peer, true);
+            options.EnabledProtocols = Both;
+            options.ConnectionIdLength = 8;
+            await using DtlsConnection connection = await DtlsConnection
+                .AcceptAsync(transport, options, TestContext.CancellationToken)
+                .AsTask()
+                .WaitAsync(s_timeout, TestContext.CancellationToken);
+
+            Assert.AreEqual(expected, connection.NegotiatedProtocol);
+            Assert.AreEqual(
+                WolfSslCid,
+                Encoding.ASCII.GetString(connection.RemoteConnectionId.Span)
+            );
+            Assert.AreEqual(8, connection.LocalConnectionId.Length);
             byte[] buffer = new byte[2048];
             int length = await connection
                 .ReceiveAsync(buffer, TestContext.CancellationToken)

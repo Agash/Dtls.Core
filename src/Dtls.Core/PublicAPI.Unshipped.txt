@@ -186,3 +186,21 @@ static Microsoft.Extensions.DependencyInjection.DtlsServiceCollectionExtensions.
 ~override Dtls.Core.DtlsConnectionStatistics.Equals(object obj) -> bool
 ~override Dtls.Core.DtlsConnectionStatistics.ToString() -> string
 ~override Dtls.Core.DtlsFingerprint.Equals(object obj) -> bool
+Dtls.Core.DtlsConnectionOptions.ConnectionIdLength.get -> int?
+Dtls.Core.DtlsConnectionOptions.ConnectionIdLength.set -> void
+Dtls.Core.DtlsConnectionOptions.RecordSizeLimit.get -> int
+Dtls.Core.DtlsConnectionOptions.RecordSizeLimit.set -> void
+Dtls.Core.DtlsConnection.LocalConnectionId.get -> System.ReadOnlyMemory<byte>
+Dtls.Core.DtlsConnection.RemoteConnectionId.get -> System.ReadOnlyMemory<byte>
+Dtls.Core.DtlsConnection.PeerRecordSizeLimit.get -> int
+Dtls.Core.DtlsAlert.TooManyCidsRequested = 52 -> Dtls.Core.DtlsAlert
+Dtls.Core.DtlsConnection.SpareConnectionIds.get -> int
+Dtls.Core.DtlsConnection.IssueConnectionIdsAsync(int count, bool useImmediately = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dtls.Core.DtlsConnection.RequestConnectionIdsAsync(int count, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dtls.Core.DtlsConnection.TryUseNextConnectionId() -> bool
+Dtls.Core.IMobileDatagramTransport
+Dtls.Core.IMobileDatagramTransport.FollowLastSender() -> bool
+Dtls.Core.UdpDatagramTransport.FollowLastSender() -> bool
+Dtls.Core.UdpDatagramTransport.RemoteEndPoint.get -> System.Net.IPEndPoint!
+static Dtls.Core.UdpDatagramTransport.FromBoundSocket(System.Net.Sockets.Socket! socket, System.Net.IPEndPoint! remoteEndPoint, bool ownsSocket = true) -> Dtls.Core.UdpDatagramTransport!
+static Dtls.Core.UdpDatagramTransport.Bind(System.Net.IPEndPoint! remoteEndPoint, System.Net.IPEndPoint? localEndPoint = null) -> Dtls.Core.UdpDatagramTransport!

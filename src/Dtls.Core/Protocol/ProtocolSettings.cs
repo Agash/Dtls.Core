@@ -22,6 +22,8 @@ internal sealed class ProtocolSettings : IDisposable
         Role = role;
         _enabled = options.EnabledProtocols;
         MaximumDatagramSize = options.MaximumDatagramSize;
+        ConnectionIdLength = options.ConnectionIdLength;
+        RecordSizeLimit = options.RecordSizeLimit;
         HandshakeTimeout = options.HandshakeTimeout;
         InitialRetransmissionTimeout = options.InitialRetransmissionTimeout;
         MaximumHandshakeMessageSize = options.MaximumHandshakeMessageSize;
@@ -61,6 +63,10 @@ internal sealed class ProtocolSettings : IDisposable
     public ImmutableArray<SslApplicationProtocol> ApplicationProtocols { get; private init; } = [];
 
     public int MaximumDatagramSize { get; }
+
+    public int? ConnectionIdLength { get; }
+
+    public int RecordSizeLimit { get; }
 
     public TimeSpan HandshakeTimeout { get; }
 

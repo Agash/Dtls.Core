@@ -284,6 +284,7 @@ internal sealed partial class DtlsProtocol
                 Messages13.SelectedVersion(ProtocolVersion.Dtls13)
             )
             .Add(ExtensionType.KeyShare, Messages13.ServerKeyShare(group, _keyShare13.PublicKey));
+        AnswerConnectionId(extensions);
         HandshakeMessage serverHello = NewMessage(
             HandshakeType.ServerHello,
             new ServerHello(_localRandom, hello.SessionId, (ushort)_suite.Suite, extensions).Encode

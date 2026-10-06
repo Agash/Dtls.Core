@@ -48,11 +48,13 @@ internal sealed partial class DtlsProtocol
         {
             if (
                 type
-                is not (
-                    ExtensionType.SupportedVersions
-                    or ExtensionType.KeyShare
-                    or ExtensionType.Cookie
-                )
+                    is not (
+                        ExtensionType.SupportedVersions
+                        or ExtensionType.KeyShare
+                        or ExtensionType.Cookie
+                        or ExtensionType.ConnectionId
+                    )
+                || (type == ExtensionType.ConnectionId && _localConnectionId is null)
             )
             {
                 throw new DtlsException(
@@ -89,6 +91,7 @@ internal sealed partial class DtlsProtocol
         }
 
         _peerRandom = hello.Random;
+        AcceptConnectionId(hello.Extensions);
         _transcript13!.Add13(message.Type, message.Body);
         byte[] shared = _keyShare13.DeriveSecret(key);
         DeriveHandshakeSecrets(shared);
@@ -212,6 +215,7 @@ internal sealed partial class DtlsProtocol
     // in DTLS 1.2.
     private void ReceiveEncryptedExtensions(EncryptedExtensions encrypted)
     {
+        AcceptRecordSizeLimit(encrypted.Extensions);
         foreach (ushort type in encrypted.Extensions.Types)
         {
             if (
@@ -227,6 +231,7 @@ internal sealed partial class DtlsProtocol
                         or ExtensionType.ExtendedMasterSecret
                         or ExtensionType.RenegotiationInfo
                         or ExtensionType.EcPointFormats
+                        or ExtensionType.ConnectionId
             )
             {
                 throw new DtlsException(

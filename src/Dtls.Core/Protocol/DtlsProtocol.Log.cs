@@ -92,4 +92,11 @@ internal sealed partial class DtlsProtocol
         "Refused a ClientHello whose cookie this server did not make"
     )]
     private partial void LogCookieRefused();
+
+    [LoggerMessage(
+        18,
+        LogLevel.Information,
+        "The peer moved to {Address}; following it by its connection ID"
+    )]
+    internal partial void LogPeerMoved(string address);
 }

@@ -349,10 +349,7 @@ internal sealed class Flight
                 continue;
             }
 
-            int room =
-                records.MaximumDatagram
-                - records.Overhead(entry.Epoch)
-                - HandshakeFragment.HeaderSize;
+            int room = records.MaximumPlaintext(entry.Epoch) - HandshakeFragment.HeaderSize;
             if (room <= 0)
             {
                 throw new InvalidOperationException(

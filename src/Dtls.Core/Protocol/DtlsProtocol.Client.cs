@@ -46,6 +46,20 @@ internal sealed partial class DtlsProtocol
             );
         }
 
+        if (_localConnectionId is not null)
+        {
+            _ = extensions.Add(
+                ExtensionType.ConnectionId,
+                HelloExtensions.ConnectionId(_localConnectionId)
+            );
+        }
+
+        // RFC 8449 §4: advertised even without a need to limit, which lets the server advertise its own.
+        _ = extensions.Add(
+            ExtensionType.RecordSizeLimit,
+            HelloExtensions.RecordSizeLimit(_settings.RecordSizeLimit)
+        );
+
         if (!_settings.ApplicationProtocols.IsEmpty)
         {
             _ = extensions.Add(
@@ -229,8 +243,11 @@ internal sealed partial class DtlsProtocol
                         or ExtensionType.RenegotiationInfo
                         or ExtensionType.UseSrtp
                         or ExtensionType.ApplicationLayerProtocolNegotiation
+                        or ExtensionType.ConnectionId
+                        or ExtensionType.RecordSizeLimit
                     )
                 || (type == ExtensionType.UseSrtp && _settings.SrtpProfiles.IsEmpty)
+                || (type == ExtensionType.ConnectionId && _localConnectionId is null)
                 || (
                     type == ExtensionType.ApplicationLayerProtocolNegotiation
                     && _settings.ApplicationProtocols.IsEmpty
@@ -245,6 +262,8 @@ internal sealed partial class DtlsProtocol
             }
         }
 
+        AcceptConnectionId(hello.Extensions);
+        AcceptRecordSizeLimit(hello.Extensions);
         _extendedMasterSecret = hello.Extensions.Contains(ExtensionType.ExtendedMasterSecret);
         if (!_extendedMasterSecret && _settings.RequireExtendedMasterSecret)
         {

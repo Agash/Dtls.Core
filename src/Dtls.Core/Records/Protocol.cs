@@ -8,6 +8,9 @@ internal enum ContentType : byte
     Handshake = 22,
     ApplicationData = 23,
 
+    // A DTLS 1.2 record carrying a connection ID (RFC 9146 §4); its real type is inside the encryption.
+    Tls12Cid = 25,
+
     // DTLS 1.3 (RFC 9147 §7).
     Ack = 26,
 }

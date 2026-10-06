@@ -284,6 +284,8 @@ internal sealed partial class DtlsProtocol
     // 7301 §3.2). A server that asks for DTLS-SRTP requires it.
     private void SelectSrtpAndApplicationProtocol(Extensions extensions)
     {
+        SelectConnectionId(extensions);
+        AcceptRecordSizeLimit(extensions);
         if (!_settings.SrtpProfiles.IsEmpty)
         {
             List<SrtpProtectionProfile> offered = extensions.TryGet(
@@ -350,6 +352,9 @@ internal sealed partial class DtlsProtocol
                 HelloExtensions.ApplicationProtocols([NegotiatedApplicationProtocol])
             );
         }
+
+        AnswerConnectionId(extensions);
+        AnswerRecordSizeLimit(extensions);
 
         Flight flight = new();
         Add(

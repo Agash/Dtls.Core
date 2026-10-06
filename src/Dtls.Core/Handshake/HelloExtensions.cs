@@ -152,4 +152,38 @@ internal static class HelloExtensions
     public static byte[] EmptyRenegotiationInfo() => [0];
 
     public static bool IsEmptyRenegotiationInfo(ReadOnlySpan<byte> data) => data is [0];
+
+    // RFC 9146 §3: the CID the sender wants in the records it receives.
+    public static byte[] ConnectionId(ReadOnlySpan<byte> cid)
+    {
+        WireWriter writer = new(1 + cid.Length);
+        writer.WriteVector8(cid);
+        return writer.ToArray();
+    }
+
+    public static byte[] ReadConnectionId(ReadOnlySpan<byte> data)
+    {
+        WireReader reader = new(data);
+        ReadOnlySpan<byte> cid = reader.ReadVector8();
+        reader.ExpectEnd();
+        return cid.ToArray();
+    }
+
+    // RFC 8449 §4: the most plaintext the sender takes in a protected record.
+    public static byte[] RecordSizeLimit(int limit)
+    {
+        WireWriter writer = new(2);
+        writer.WriteUInt16((ushort)limit);
+        return writer.ToArray();
+    }
+
+    public static int ReadRecordSizeLimit(ReadOnlySpan<byte> data)
+    {
+        WireReader reader = new(data);
+        int limit = reader.ReadUInt16();
+        reader.ExpectEnd();
+        return limit >= 64
+            ? limit
+            : throw DtlsException.IllegalParameter("a record size limit below 64 bytes");
+    }
 }
