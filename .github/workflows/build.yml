@@ -116,6 +116,48 @@ jobs:
           & $exe
           exit $LASTEXITCODE
 
+  coverage:
+    name: Coverage (all legs merged)
+    # Schannel runs on Windows only, Network.framework on macOS only and the OpenSSL server rows on
+    # Linux and macOS, so the figure that means anything is the union of every leg's report.
+    needs: [test]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: |
+            10.0.x
+            11.0.x
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-*
+          path: coverage
+
+      - name: Merge
+        shell: pwsh
+        run: |
+          $reports = @(Get-ChildItem coverage -Recurse -Filter '*.cobertura.xml' | ForEach-Object FullName)
+          $totals = ./eng/merge-coverage.ps1 -Reports $reports -Output merged.cobertura.xml
+          @(
+            '### Coverage, all legs merged'
+            ''
+            '| Metric | Covered | Total | Rate |'
+            '| --- | ---: | ---: | ---: |'
+            "| Lines | $($totals.LinesCovered) | $($totals.LinesValid) | $($totals.Lines.ToString('P1')) |"
+            "| Branches | $($totals.BranchesCovered) | $($totals.BranchesValid) | $($totals.Branches.ToString('P1')) |"
+          ) | Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-merged
+          path: merged.cobertura.xml
+
   pack:
     name: Pack
     needs: [test]

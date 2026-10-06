@@ -6,6 +6,8 @@ namespace Dtls.Core.Tests;
 // Handshakes with Windows' Schannel in both directions: the handshake completes, both sides agree on
 // the SRTP profile and the keying material, each has the other's certificate, and data crosses.
 [TestClass]
+[OSCondition(OperatingSystems.Windows)]
+[SupportedOSPlatform("windows")]
 [TestCategory("Interop")]
 public sealed class SchannelInteropTests
 {
@@ -35,18 +37,11 @@ public sealed class SchannelInteropTests
     [DataRow(DtlsKeyType.EcdsaP256, true)]
     [DataRow(DtlsKeyType.EcdsaP384, false)]
     [DataRow(DtlsKeyType.Rsa2048, true)]
-    [SupportedOSPlatform("windows")]
     public async Task Connect_ToSchannelServer_AgreesOnKeys(
         DtlsKeyType keyType,
         bool smallDatagrams
     )
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Inconclusive("Schannel is Windows'.");
-            return;
-        }
-
         using X509Certificate2 own = DtlsCertificates.CreateSelfSigned(keyType);
         using X509Certificate2 peer = Persisted(DtlsCertificates.CreateSelfSigned(keyType));
         DatagramPair path = new();
@@ -81,18 +76,11 @@ public sealed class SchannelInteropTests
     [DataRow(DtlsKeyType.EcdsaP256, true)]
     [DataRow(DtlsKeyType.EcdsaP256, false)]
     [DataRow(DtlsKeyType.Rsa2048, true)]
-    [SupportedOSPlatform("windows")]
     public async Task Accept_FromSchannelClient_AgreesOnKeys(
         DtlsKeyType keyType,
         bool cookieExchange
     )
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Inconclusive("Schannel is Windows'.");
-            return;
-        }
-
         using X509Certificate2 own = DtlsCertificates.CreateSelfSigned(keyType);
         using X509Certificate2 peer = Persisted(DtlsCertificates.CreateSelfSigned(keyType));
         DatagramPair path = new();
@@ -130,7 +118,6 @@ public sealed class SchannelInteropTests
         return options;
     }
 
-    [SupportedOSPlatform("windows")]
     private async Task AssertAgreesAsync(
         DtlsConnection connection,
         SchannelPeer schannel,

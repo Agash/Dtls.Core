@@ -34,7 +34,10 @@ public sealed partial class OpenSslInteropTests
         )
         ?? "openssl";
 
+    // The Windows builds of s_server wait on stdin when it is a pipe and never read the DTLS socket;
+    // s_client works, so our server is checked there, and our client on Linux and macOS.
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux | OperatingSystems.OSX)]
     [DataRow(DtlsKeyType.EcdsaP256, "ECDHE-ECDSA-AES128-GCM-SHA256", true)]
     [DataRow(DtlsKeyType.EcdsaP256, "ECDHE-ECDSA-AES256-GCM-SHA384", false)]
     [DataRow(DtlsKeyType.EcdsaP256, "ECDHE-ECDSA-CHACHA20-POLY1305", false)]
@@ -45,13 +48,6 @@ public sealed partial class OpenSslInteropTests
         bool smallDatagrams
     )
     {
-        if (OperatingSystem.IsWindows())
-        {
-            // The Windows builds of s_server wait on stdin when it is a pipe and never read the DTLS socket;
-            // s_client works, so our server is checked there, and our client on Linux and macOS.
-            Assert.Inconclusive("s_server does not serve DTLS with piped stdin on Windows.");
-        }
-
         using X509Certificate2 own = DtlsCertificates.CreateSelfSigned(keyType);
         using X509Certificate2 peer = DtlsCertificates.CreateSelfSigned(keyType);
         using TempPem pem = new(peer);
@@ -136,12 +132,13 @@ public sealed partial class OpenSslInteropTests
     // macOS ships LibreSSL as /usr/bin/openssl. It has no extended master secret, which Dtls.Core requires
     // by default: the default refuses it, and a server that allows the older derivation interoperates.
     [TestMethod]
+    [OSCondition(OperatingSystems.OSX)]
     public async Task Accept_FromLibreSslClient_NeedsTheOlderMasterSecretAllowed()
     {
         const string libreSsl = "/usr/bin/openssl";
-        if (!OperatingSystem.IsMacOS() || !File.Exists(libreSsl))
+        if (!File.Exists(libreSsl))
         {
-            Assert.Inconclusive("LibreSSL is the macOS system openssl.");
+            Assert.Inconclusive("This macOS has no system openssl.");
         }
 
         using X509Certificate2 own = DtlsCertificates.CreateSelfSigned();

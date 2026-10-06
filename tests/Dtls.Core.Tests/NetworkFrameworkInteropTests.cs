@@ -9,6 +9,7 @@ namespace Dtls.Core.Tests;
 // each has the other's certificate, and data crosses. Network.framework has no DTLS-SRTP, so
 // use_srtp is not offered here; the exporter it would feed is compared directly.
 [TestClass]
+[OSCondition(OperatingSystems.OSX)]
 [TestCategory("Interop")]
 public sealed partial class NetworkFrameworkInteropTests
 {
@@ -108,11 +109,6 @@ public sealed partial class NetworkFrameworkInteropTests
 
     private static PeerProcess StartPeer(string arguments)
     {
-        if (!OperatingSystem.IsMacOS())
-        {
-            Assert.Inconclusive("Network.framework is Apple's.");
-        }
-
         return PeerProcess.Start("swift", $"{Script()} {arguments}");
     }
 
