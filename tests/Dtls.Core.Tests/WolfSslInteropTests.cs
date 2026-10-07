@@ -160,7 +160,7 @@ public sealed partial class WolfSslInteropTests
         int port = OpenSslInteropTests.FreePort();
         using PeerProcess server = Start(
             "server",
-            $"-u -v {version} -p {port} -c {peerPem.Certificate} -k {peerPem.Key} -A {ownPem.Certificate} --cid {WolfSslCid}"
+            $"-u -v {version} -p {port} -c {peerPem.Certificate} -k {peerPem.Key} -A {ownPem.Certificate} --srtp SRTP_AES128_CM_SHA1_80 --cid {WolfSslCid}"
         );
         try
         {
@@ -168,6 +168,7 @@ public sealed partial class WolfSslInteropTests
                 new IPEndPoint(IPAddress.Loopback, port)
             );
             DtlsClientConnectionOptions options = HandshakeTests.Client(own, peer);
+            options.SrtpProtectionProfiles = [SrtpProtectionProfile.Aes128CmHmacSha180];
             options.EnabledProtocols = Both;
             options.ConnectionIdLength = 8;
             await using DtlsConnection connection = await DtlsConnection
@@ -217,11 +218,12 @@ public sealed partial class WolfSslInteropTests
         using ListeningTransport transport = new();
         using PeerProcess client = Start(
             "client",
-            $"-u -v {version} -h 127.0.0.1 -p {transport.Port} -c {peerPem.Certificate} -k {peerPem.Key} -A {ownPem.Certificate} --cid {WolfSslCid}"
+            $"-u -v {version} -h 127.0.0.1 -p {transport.Port} -c {peerPem.Certificate} -k {peerPem.Key} -A {ownPem.Certificate} --srtp SRTP_AES128_CM_SHA1_80 --cid {WolfSslCid}"
         );
         try
         {
             DtlsServerConnectionOptions options = HandshakeTests.Server(own, peer, true);
+            options.SrtpProtectionProfiles = [SrtpProtectionProfile.Aes128CmHmacSha180];
             options.EnabledProtocols = Both;
             options.ConnectionIdLength = 8;
             await using DtlsConnection connection = await DtlsConnection
