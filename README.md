@@ -22,6 +22,9 @@ and certificates are validated with a `RemoteCertificateValidationCallback`.
 - The handshake retransmits, fragments to the path's MTU, exchanges a cookie before doing any work for
   an unverified address, and drops what does not authenticate or is replayed rather than letting it end
   the connection.
+- Connection IDs keep a connection alive when the peer's address changes, as a phone moving from Wi-Fi to
+  cellular or a NAT rebinding does, and record size limits let a constrained receiver bound what it is
+  sent.
 - Logs through `Microsoft.Extensions.Logging` and runs on a `TimeProvider`.
 
 > **Alpha.** Expect breaking changes before 1.0.
@@ -65,12 +68,44 @@ client authenticates too).
 ## Transports
 
 A connection runs over an `IDatagramTransport`: send and receive whole datagrams to and from one peer.
-`UdpDatagramTransport` wraps a connected UDP socket; an ICE implementation, which demultiplexes DTLS
-from SRTP and STUN on one socket, implements the interface to hand the connection its DTLS datagrams.
+`UdpDatagramTransport` wraps a UDP socket; an ICE implementation, which demultiplexes DTLS from SRTP and
+STUN on one socket, implements the interface to hand the connection its DTLS datagrams.
 
 ```csharp
+// Connected to one address.
 using UdpDatagramTransport transport = UdpDatagramTransport.Connect(new IPEndPoint(address, port));
+
+// Bound but not connected: receives from any address, so the connection can follow a peer that moves.
+using UdpDatagramTransport mobile = UdpDatagramTransport.Bind(new IPEndPoint(address, port));
 ```
+
+## Connection IDs and moving peers
+
+With connection IDs (RFC 9146 for DTLS 1.2, RFC 9147 section 9 for DTLS 1.3) every protected record
+carries an identifier the receiver chose, so the receiver recognises its peer's records from any address.
+`ConnectionIdLength` sets the length this side asks for: 0 by default, which offers the extension without
+asking for an identifier but still gives the peer one when it asks; null leaves the extension out.
+
+```csharp
+options.ConnectionIdLength = 8;  // ask the peer to put an 8-byte identifier in every record it sends
+```
+
+`LocalConnectionId` and `RemoteConnectionId` show what was agreed. Over a transport that implements
+`IMobileDatagramTransport`, such as a bound `UdpDatagramTransport`, the connection follows the peer to a
+new address when a record arrives from there that carries this side's identifier, authenticates, and is
+newer than every record before it (RFC 9146 section 6), so a replayed or forged datagram cannot redirect
+it.
+
+DTLS 1.3 also changes identifiers during the connection: `IssueConnectionIdsAsync` gives the peer new
+ones, to use at once or keep as spares; `RequestConnectionIdsAsync` asks the peer for spares; and
+`TryUseNextConnectionId` switches to the next spare, which RFC 9147 asks for on a new path so the two
+paths cannot be linked by their identifier.
+
+## Record size limits
+
+`RecordSizeLimit` (RFC 8449) is the most plaintext this side takes in a protected record, 16384 bytes by
+default. It is always advertised, and the peer's limit, `PeerRecordSizeLimit`, bounds
+`MaximumApplicationDataSize`.
 
 ## Data
 
@@ -128,10 +163,10 @@ does not finish within `HandshakeTimeout` throws `TimeoutException`. Once connec
 | DTLS 1.2 cipher suites | `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`, `..._AES_256_GCM_SHA384`, `..._CHACHA20_POLY1305_SHA256`, and the `ECDHE_RSA` equivalents |
 | Groups | P-256, P-384 |
 | Signatures | ECDSA with SHA-256 and SHA-384, RSA-PSS, RSA PKCS #1 (DTLS 1.2) |
-| DTLS 1.3 | HelloRetryRequest with cookie, ACKs, KeyUpdate, record number encryption |
+| DTLS 1.3 | HelloRetryRequest with cookie, ACKs, KeyUpdate, record number encryption, NewConnectionId and RequestConnectionId |
 | DTLS 1.2 | extended master secret (required by default), `renegotiation_info`, HelloVerifyRequest cookie |
-| Both | `use_srtp`, ALPN, the keying material exporter |
-| Not implemented | session resumption, PSK, 0-RTT, connection IDs, renegotiation (refused), DTLS 1.0, compression |
+| Both | `use_srtp`, ALPN, connection IDs and peer address updates, `record_size_limit`, the keying material exporter |
+| Not implemented | session resumption, PSK, 0-RTT, renegotiation (refused), DTLS 1.0, compression |
 
 ## Interoperability
 
@@ -140,7 +175,7 @@ implementations, in both roles where the peer has them:
 
 | Peer | Versions | Dtls.Core as client | Dtls.Core as server | DTLS-SRTP |
 | --- | --- | --- | --- | --- |
-| wolfSSL 5.9 (Linux) | 1.3, 1.2, and either | yes | yes | yes |
+| wolfSSL 5.9 (Linux) | 1.3, 1.2, and either; connection IDs in both | yes | yes | yes |
 | OpenSSL 3 (Linux, macOS) | 1.2 | yes | yes | yes |
 | Schannel (Windows) | 1.2 | yes | yes | yes |
 | Network.framework (macOS) | 1.2 | yes | yes | not in its API |

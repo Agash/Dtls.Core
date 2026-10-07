@@ -9,15 +9,18 @@
 | Authentication | X.509 certificates, both sides; ECDSA (curve-bound), RSA-PSS | X.509 certificates, both sides; ECDSA, RSA-PSS, RSA PKCS #1 |
 | Address validation | Stateless HelloRetryRequest cookie | Stateless HelloVerifyRequest cookie |
 | Reliability | Flight retransmission with ACKs; fragmentation to the path MTU | Flight retransmission; fragmentation to the path MTU |
-| After the handshake | KeyUpdate (both ways), NewSessionTicket acknowledged and ignored | No renegotiation (refused with no_renegotiation) |
-| Extensions | use_srtp, ALPN, supported_groups, signature_algorithms, cookie | use_srtp, ALPN, extended master secret, renegotiation_info |
+| After the handshake | KeyUpdate (both ways), NewConnectionId and RequestConnectionId, NewSessionTicket acknowledged and ignored | No renegotiation (refused with no_renegotiation) |
+| Extensions | use_srtp, ALPN, supported_groups, signature_algorithms, cookie, connection_id, record_size_limit | use_srtp, ALPN, extended master secret, renegotiation_info, connection_id, record_size_limit |
+| Connection IDs | In the unified header (RFC 9147 section 9); changed during the connection | `tls12_cid` records (RFC 9146) |
+| Moving peers | Followed to a new address on an authenticated, newer record with this side's ID | The same (RFC 9146 section 6) |
 | Keys out | RFC 8446 exporter; DTLS-SRTP keying material | RFC 5705 exporter; DTLS-SRTP keying material |
 
 ## Not supported, deliberately
 
 - **0-RTT (early data).** DTLS makes replay of early data easy; it is not offered or accepted.
-- **Session resumption and PSK**, **raw public keys (RFC 7250)**, **connection IDs (RFC 9146)**:
-  not yet. A record with a connection ID is dropped.
+- **Session resumption and PSK** and **raw public keys (RFC 7250)**: not yet.
+- **Return routability checks** (draft-ietf-tls-dtls-rrc): a peer's new address is taken on an
+  authenticated, newer record without first checking it answers there.
 - **DTLS 1.0**: deprecated by RFC 8996.
 - **Renegotiation and compression**: never negotiated.
 
@@ -51,6 +54,15 @@ feeds thousands of random and mutated datagrams during and after handshakes):
   messages are done; everything else when the connection is disposed.
 - **A server keeps no state before the cookie.** Both versions answer a ClientHello without a valid
   cookie from what it carries alone.
+- **Only an authenticated, newer record moves a connection.** The peer's address is updated only for a
+  record that carries this side's connection ID, authenticates, and is newer than every record before it;
+  a replayed record is dropped by the replay window first. Without agreed connection IDs, a record that
+  carries one is dropped.
+- **Connection IDs are rationed.** At most 8 spare IDs from the peer are kept; at most 64 are issued over
+  a connection, and a request beyond that is answered with fewer, down to none (RFC 9147 section 9).
+  More than 128 requests end the connection with too_many_cids_requested.
+- **Records respect the peer's limit.** No protected record carries more plaintext than the peer's
+  record_size_limit; a limit below 64 bytes is an illegal_parameter.
 
 ## Closing
 
