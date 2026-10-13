@@ -153,7 +153,7 @@ public sealed class UdpDatagramTransport : IMobileDatagramTransport, IDisposable
         }
         catch (SocketException error) when (IsRefusal(error))
         {
-            // Deliberately ignored: a refused datagram is a lost datagram, which DTLS recovers from.
+            // Deliberately not logged: a refused datagram is a lost datagram, which DTLS recovers from.
         }
     }
 
@@ -178,7 +178,7 @@ public sealed class UdpDatagramTransport : IMobileDatagramTransport, IDisposable
             }
             catch (SocketException error) when (IsRefusal(error))
             {
-                // Deliberately ignored: see SendAsync.
+                // Deliberately not logged: a refused datagram is a lost datagram, as in SendAsync.
             }
         }
     }
