@@ -167,7 +167,7 @@ override Dtls.Core.DtlsFingerprint.ToString() -> string!
 override Dtls.Core.SrtpKeyingMaterial.Equals(object? obj) -> bool
 override Dtls.Core.SrtpKeyingMaterial.GetHashCode() -> int
 override Dtls.Core.SrtpKeyingMaterial.ToString() -> string!
-static Dtls.Core.DtlsCertificates.CreateSelfSigned(Dtls.Core.DtlsKeyType keyType = Dtls.Core.DtlsKeyType.EcdsaP256, System.TimeSpan? validity = null) -> System.Security.Cryptography.X509Certificates.X509Certificate2!
+static Dtls.Core.DtlsCertificates.CreateSelfSigned(Dtls.Core.DtlsKeyType keyType = Dtls.Core.DtlsKeyType.EcdsaP256, System.TimeSpan? validity = null, System.TimeProvider? timeProvider = null) -> System.Security.Cryptography.X509Certificates.X509Certificate2!
 static Dtls.Core.DtlsConnection.AcceptAsync(Dtls.Core.IDatagramTransport! transport, Dtls.Core.DtlsServerConnectionOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dtls.Core.DtlsConnection!>
 static Dtls.Core.DtlsConnection.ConnectAsync(Dtls.Core.IDatagramTransport! transport, Dtls.Core.DtlsClientConnectionOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dtls.Core.DtlsConnection!>
 static Dtls.Core.DtlsConnectionStatistics.operator !=(Dtls.Core.DtlsConnectionStatistics left, Dtls.Core.DtlsConnectionStatistics right) -> bool

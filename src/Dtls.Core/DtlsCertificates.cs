@@ -26,10 +26,12 @@ public static class DtlsCertificates
     /// <summary>Makes a self-signed certificate with a new key.</summary>
     /// <param name="keyType">The key type; ECDSA on P-256 by default.</param>
     /// <param name="validity">How long it is valid from now; 30 days by default.</param>
+    /// <param name="timeProvider">The clock "now" is read from; the system's when null.</param>
     /// <returns>The certificate with its private key.</returns>
     public static X509Certificate2 CreateSelfSigned(
         DtlsKeyType keyType = DtlsKeyType.EcdsaP256,
-        TimeSpan? validity = null
+        TimeSpan? validity = null,
+        TimeProvider? timeProvider = null
     )
     {
         TimeSpan lifetime = validity ?? TimeSpan.FromDays(30);
@@ -43,7 +45,7 @@ public static class DtlsCertificates
         X500DistinguishedName subject = new(
             $"CN={Convert.ToHexString(RandomNumberGenerator.GetBytes(8))}"
         );
-        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DateTimeOffset now = (timeProvider ?? TimeProvider.System).GetUtcNow();
         if (keyType == DtlsKeyType.Rsa2048)
         {
             using RSA rsa = RSA.Create(2048);
