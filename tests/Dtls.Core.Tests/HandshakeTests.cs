@@ -246,45 +246,110 @@ public sealed class HandshakeTests
         );
     }
 
+    // RFC 5246 section 7.2.1: a DTLS 1.2 close_notify closes both directions. RFC 8446 section 6.1:
+    // a DTLS 1.3 close_notify closes only the sender's writing, so the other side may go on sending.
     [TestMethod]
-    public async Task CloseAsync_ByThePeer_EndsReceiving()
+    [DataRow(DtlsProtocols.Dtls12)]
+    [DataRow(DtlsProtocols.Dtls13)]
+    public async Task CloseAsync_ByThePeer_EndsReceiving(DtlsProtocols protocol)
     {
-        using X509Certificate2 clientCertificate = DtlsCertificates.CreateSelfSigned();
-        using X509Certificate2 serverCertificate = DtlsCertificates.CreateSelfSigned();
-        DatagramPair path = new();
-
-        (DtlsConnection client, DtlsConnection server) = await ConnectAsync(
-            path,
-            Client(clientCertificate, serverCertificate),
-            Server(serverCertificate, clientCertificate, cookieExchange: true)
-        );
+        (DtlsConnection client, DtlsConnection server) = await ConnectAsync(protocol);
         await using (client)
         await using (server)
         {
             await client.SendAsync(new byte[] { 7 }, TestContext.CancellationToken);
             await client.CloseAsync(TestContext.CancellationToken);
 
-            byte[] buffer = new byte[2048];
-            Assert.AreEqual(
-                1,
-                await server
-                    .ReceiveAsync(buffer, TestContext.CancellationToken)
-                    .AsTask()
-                    .WaitAsync(s_testTimeout, TestContext.CancellationToken)
+            Assert.AreEqual(1, await ReceiveAsync(server));
+            Assert.AreEqual(0, await ReceiveAsync(server));
+            if (protocol == DtlsProtocols.Dtls12)
+            {
+                DtlsException error = await Assert.ThrowsExactlyAsync<DtlsException>(() =>
+                    server.SendAsync(new byte[] { 1 }, TestContext.CancellationToken).AsTask()
+                );
+                Assert.IsTrue(error.IsRemote);
+            }
+            else
+            {
+                await server.SendAsync(new byte[] { 1 }, TestContext.CancellationToken);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task ShutdownAsync_Dtls13_PeerKeepsSendingUntilItShutsDown()
+    {
+        (DtlsConnection client, DtlsConnection server) = await ConnectAsync(DtlsProtocols.Dtls13);
+        await using (client)
+        await using (server)
+        {
+            await client.SendAsync(new byte[] { 7 }, TestContext.CancellationToken);
+            await client.ShutdownAsync(TestContext.CancellationToken);
+
+            Assert.AreEqual(1, await ReceiveAsync(server));
+            Assert.AreEqual(0, await ReceiveAsync(server));
+            DtlsException error = await Assert.ThrowsExactlyAsync<DtlsException>(() =>
+                client.SendAsync(new byte[] { 1 }, TestContext.CancellationToken).AsTask()
             );
-            Assert.AreEqual(
-                0,
-                await server
-                    .ReceiveAsync(buffer, TestContext.CancellationToken)
-                    .AsTask()
-                    .WaitAsync(s_testTimeout, TestContext.CancellationToken)
+            Assert.IsFalse(error.IsRemote);
+
+            await server.SendAsync(new byte[] { 1, 2 }, TestContext.CancellationToken);
+            Assert.AreEqual(2, await ReceiveAsync(client));
+
+            await server.ShutdownAsync(TestContext.CancellationToken);
+            Assert.AreEqual(0, await ReceiveAsync(client));
+            _ = await Assert.ThrowsExactlyAsync<DtlsException>(() =>
+                server.SendAsync(new byte[] { 1 }, TestContext.CancellationToken).AsTask()
             );
+        }
+    }
+
+    [TestMethod]
+    public async Task ShutdownAsync_Dtls12_ClosesBothDirections()
+    {
+        (DtlsConnection client, DtlsConnection server) = await ConnectAsync(DtlsProtocols.Dtls12);
+        await using (client)
+        await using (server)
+        {
+            await client.ShutdownAsync(TestContext.CancellationToken);
+
+            Assert.AreEqual(0, await ReceiveAsync(server));
             DtlsException error = await Assert.ThrowsExactlyAsync<DtlsException>(() =>
                 server.SendAsync(new byte[] { 1 }, TestContext.CancellationToken).AsTask()
             );
             Assert.IsTrue(error.IsRemote);
+            Assert.AreEqual(0, await ReceiveAsync(client));
         }
     }
+
+    private async Task<(DtlsConnection Client, DtlsConnection Server)> ConnectAsync(
+        DtlsProtocols protocol
+    )
+    {
+        using X509Certificate2 clientCertificate = DtlsCertificates.CreateSelfSigned();
+        using X509Certificate2 serverCertificate = DtlsCertificates.CreateSelfSigned();
+        DtlsClientConnectionOptions clientOptions = Client(clientCertificate, serverCertificate);
+        clientOptions.EnabledProtocols = protocol;
+        DtlsServerConnectionOptions serverOptions = Server(
+            serverCertificate,
+            clientCertificate,
+            cookieExchange: true
+        );
+        serverOptions.EnabledProtocols = protocol;
+        (DtlsConnection client, DtlsConnection server) = await ConnectAsync(
+            new DatagramPair(),
+            clientOptions,
+            serverOptions
+        );
+        Assert.AreEqual(protocol, client.NegotiatedProtocol);
+        return (client, server);
+    }
+
+    private async Task<int> ReceiveAsync(DtlsConnection connection) =>
+        await connection
+            .ReceiveAsync(new byte[2048], TestContext.CancellationToken)
+            .AsTask()
+            .WaitAsync(s_testTimeout, TestContext.CancellationToken);
 
     [TestMethod]
     public async Task ExportKeyingMaterial_ReservedLabel_Throws()

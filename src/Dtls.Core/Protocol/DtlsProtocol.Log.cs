@@ -99,4 +99,11 @@ internal sealed partial class DtlsProtocol
         "The peer moved to {Address}; following it by its connection ID"
     )]
     internal partial void LogPeerMoved(string address);
+
+    [LoggerMessage(
+        19,
+        LogLevel.Information,
+        "The peer shut down its sending; this side may still send"
+    )]
+    private partial void LogPeerShutDown();
 }

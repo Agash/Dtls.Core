@@ -117,8 +117,12 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
     // time, or what the driver aborted it with.
     public Exception? Error { get; private set; }
 
-    // Whether the peer closed the connection with close_notify.
+    // Whether the peer closed the connection with close_notify. In DTLS 1.3 that closes only the
+    // peer's writing (RFC 8446 section 6.1): nothing more arrives, and this side may go on sending.
     public bool ClosedByPeer { get; private set; }
+
+    // Whether this side sent close_notify and so sends nothing more.
+    public bool ShutDown => _closeNotifySent;
 
     public TlsCipherSuite NegotiatedCipherSuite => _suite.Suite;
 
@@ -250,6 +254,11 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
                 );
         }
 
+        if (_closeNotifySent)
+        {
+            throw new InvalidOperationException("This side has shut down and sends nothing more.");
+        }
+
         if (data.Length > MaximumApplicationDataSize)
         {
             throw new ArgumentException(
@@ -291,6 +300,24 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
     public int MaximumDatagramSize => _records.MaximumDatagram;
 
     public void SetMaximumDatagramSize(int size) => _records.SetMaximumDatagram(size);
+
+    // Closes this side's writing with close_notify. DTLS 1.3 keeps reading until the peer's
+    // close_notify (RFC 8446 section 6.1); DTLS 1.2 has no half-close, so there it closes.
+    public void Shutdown()
+    {
+        if (State is ProtocolState.Closed or ProtocolState.Failed || _closeNotifySent)
+        {
+            return;
+        }
+
+        if (_version != DtlsProtocols.Dtls13 || State != ProtocolState.Connected || ClosedByPeer)
+        {
+            Close();
+            return;
+        }
+
+        SendCloseNotify();
+    }
 
     // Closes the connection, telling the peer with close_notify.
     public void Close()
@@ -404,9 +431,11 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
             case ContentType.Ack when tls13:
                 ReceiveAck(payload);
                 break;
+            // Data after the peer's close_notify is ignored (RFC 8446 section 6.1).
             case ContentType.ApplicationData
                 when (tls13 ? epoch >= ApplicationEpoch : current && epoch > 0)
                     && State == ProtocolState.Connected
+                    && !ClosedByPeer
                     && !payload.IsEmpty:
                 applicationData.Add(new Range(offset, offset + payload.Length));
                 _applicationReceived++;
@@ -597,9 +626,21 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
         DtlsAlert alert = (DtlsAlert)payload[1];
         if (alert == DtlsAlert.CloseNotify)
         {
-            // RFC 5246 §7.2.1: answer with a close_notify of this side's own.
-            SendCloseNotify();
             ClosedByPeer = true;
+            if (
+                _version == DtlsProtocols.Dtls13
+                && State == ProtocolState.Connected
+                && !_closeNotifySent
+            )
+            {
+                // RFC 8446 section 6.1: close_notify closes the peer's writing only. This side
+                // answers with its own when it shuts down.
+                LogPeerShutDown();
+                return;
+            }
+
+            // RFC 5246 section 7.2.1: answer with a close_notify of this side's own and close.
+            SendCloseNotify();
             State = ProtocolState.Closed;
             StopTimers();
             LogClosed(byPeer: true);

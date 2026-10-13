@@ -247,7 +247,7 @@ public sealed class DtlsConnection : IAsyncDisposable
     /// <param name="cancellationToken">Cancels the send.</param>
     /// <returns>A task that completes when the datagram has been handed to the transport.</returns>
     /// <exception cref="ArgumentException">The data does not fit one datagram.</exception>
-    /// <exception cref="DtlsException">The connection has closed or failed.</exception>
+    /// <exception cref="DtlsException">The connection has closed or failed, or this side has shut down.</exception>
     /// <exception cref="ObjectDisposedException">The connection is disposed.</exception>
     public async ValueTask SendAsync(
         ReadOnlyMemory<byte> data,
@@ -263,7 +263,12 @@ public sealed class DtlsConnection : IAsyncDisposable
         await FlushAsync(cancellationToken).ConfigureAwait(false);
         lock (_lock)
         {
-            ThrowIfUnusable();
+            // The record went out before anything that happened during the flush. A close_notify
+            // that arrived meanwhile does not unsend it; a failure does say the transport broke.
+            if (_protocol.State == ProtocolState.Failed)
+            {
+                ExceptionDispatchInfo.Throw(_protocol.Error!);
+            }
         }
     }
 
@@ -457,6 +462,25 @@ public sealed class DtlsConnection : IAsyncDisposable
         }
 
         await FlushAsync(CancellationToken.None).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Shuts down this side's sending with a close_notify alert. In DTLS 1.3 the peer may go on
+    /// sending, and <see cref="ReceiveAsync"/> delivers it until the peer shuts down too
+    /// (RFC 8446 section 6.1). DTLS 1.2 has no half-close, so there this closes the connection.
+    /// </summary>
+    /// <param name="cancellationToken">Cancels sending the alert.</param>
+    /// <returns>A task that completes when the alert has been sent.</returns>
+    public async ValueTask ShutdownAsync(CancellationToken cancellationToken = default)
+    {
+        lock (_lock)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _protocol.Shutdown();
+            Observe();
+        }
+
+        await FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Closes the connection, telling the peer with a close_notify alert.</summary>
@@ -679,6 +703,12 @@ public sealed class DtlsConnection : IAsyncDisposable
         {
             case ProtocolState.Connected:
                 _ = _handshake.TrySetResult();
+                if (_protocol.ClosedByPeer)
+                {
+                    // DTLS 1.3 half-close: the peer sends nothing more.
+                    _ = _received.Writer.TryComplete();
+                }
+
                 break;
             case ProtocolState.Failed:
                 Exception error = _protocol.Error!;
@@ -732,6 +762,12 @@ public sealed class DtlsConnection : IAsyncDisposable
                     DtlsAlert.CloseNotify,
                     _protocol.ClosedByPeer,
                     "The DTLS connection is closed."
+                );
+            case ProtocolState.Connected when _protocol.ShutDown:
+                throw new DtlsException(
+                    DtlsAlert.CloseNotify,
+                    isRemote: false,
+                    "This side of the DTLS connection has shut down."
                 );
         }
     }

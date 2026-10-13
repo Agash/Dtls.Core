@@ -19,6 +19,7 @@ Dtls.Core.DtlsAlert.NoApplicationProtocol = 120 -> Dtls.Core.DtlsAlert
 Dtls.Core.DtlsAlert.NoRenegotiation = 100 -> Dtls.Core.DtlsAlert
 Dtls.Core.DtlsAlert.ProtocolVersion = 70 -> Dtls.Core.DtlsAlert
 Dtls.Core.DtlsAlert.RecordOverflow = 22 -> Dtls.Core.DtlsAlert
+Dtls.Core.DtlsAlert.TooManyCidsRequested = 52 -> Dtls.Core.DtlsAlert
 Dtls.Core.DtlsAlert.UnexpectedMessage = 10 -> Dtls.Core.DtlsAlert
 Dtls.Core.DtlsAlert.UnknownCa = 48 -> Dtls.Core.DtlsAlert
 Dtls.Core.DtlsAlert.UnsupportedCertificate = 43 -> Dtls.Core.DtlsAlert
@@ -34,17 +35,25 @@ Dtls.Core.DtlsConnection.CloseAsync(System.Threading.CancellationToken cancellat
 Dtls.Core.DtlsConnection.DisposeAsync() -> System.Threading.Tasks.ValueTask
 Dtls.Core.DtlsConnection.ExportKeyingMaterial(string! label, System.ReadOnlySpan<byte> context, System.Span<byte> destination) -> void
 Dtls.Core.DtlsConnection.ExportKeyingMaterial(string! label, System.Span<byte> destination) -> void
+Dtls.Core.DtlsConnection.IssueConnectionIdsAsync(int count, bool useImmediately = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dtls.Core.DtlsConnection.LocalConnectionId.get -> System.ReadOnlyMemory<byte>
 Dtls.Core.DtlsConnection.MaximumApplicationDataSize.get -> int
 Dtls.Core.DtlsConnection.MaximumDatagramSize.get -> int
 Dtls.Core.DtlsConnection.MaximumDatagramSize.set -> void
 Dtls.Core.DtlsConnection.NegotiatedApplicationProtocol.get -> System.Net.Security.SslApplicationProtocol
 Dtls.Core.DtlsConnection.NegotiatedCipherSuite.get -> System.Net.Security.TlsCipherSuite
 Dtls.Core.DtlsConnection.NegotiatedProtocol.get -> Dtls.Core.DtlsProtocols
+Dtls.Core.DtlsConnection.PeerRecordSizeLimit.get -> int
 Dtls.Core.DtlsConnection.ReceiveAsync(System.Memory<byte> buffer, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<int>
 Dtls.Core.DtlsConnection.RemoteCertificate.get -> System.Security.Cryptography.X509Certificates.X509Certificate2?
+Dtls.Core.DtlsConnection.RemoteConnectionId.get -> System.ReadOnlyMemory<byte>
+Dtls.Core.DtlsConnection.RequestConnectionIdsAsync(int count, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
 Dtls.Core.DtlsConnection.SendAsync(System.ReadOnlyMemory<byte> data, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dtls.Core.DtlsConnection.ShutdownAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dtls.Core.DtlsConnection.SpareConnectionIds.get -> int
 Dtls.Core.DtlsConnection.SrtpKeyingMaterial.get -> Dtls.Core.SrtpKeyingMaterial?
 Dtls.Core.DtlsConnection.Statistics.get -> Dtls.Core.DtlsConnectionStatistics
+Dtls.Core.DtlsConnection.TryUseNextConnectionId() -> bool
 Dtls.Core.DtlsConnectionFactory
 Dtls.Core.DtlsConnectionFactory.AcceptAsync(Dtls.Core.IDatagramTransport! transport, Dtls.Core.DtlsServerConnectionOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dtls.Core.DtlsConnection!>
 Dtls.Core.DtlsConnectionFactory.AcceptAsync(Dtls.Core.IDatagramTransport! transport, string! name, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dtls.Core.DtlsConnection!>
@@ -54,6 +63,8 @@ Dtls.Core.DtlsConnectionFactory.DtlsConnectionFactory(Microsoft.Extensions.Optio
 Dtls.Core.DtlsConnectionOptions
 Dtls.Core.DtlsConnectionOptions.CipherSuites.get -> System.Collections.Generic.IList<System.Net.Security.TlsCipherSuite>?
 Dtls.Core.DtlsConnectionOptions.CipherSuites.set -> void
+Dtls.Core.DtlsConnectionOptions.ConnectionIdLength.get -> int?
+Dtls.Core.DtlsConnectionOptions.ConnectionIdLength.set -> void
 Dtls.Core.DtlsConnectionOptions.EnabledProtocols.get -> Dtls.Core.DtlsProtocols
 Dtls.Core.DtlsConnectionOptions.EnabledProtocols.set -> void
 Dtls.Core.DtlsConnectionOptions.HandshakeTimeout.get -> System.TimeSpan
@@ -70,6 +81,8 @@ Dtls.Core.DtlsConnectionOptions.ReceiveQueueCapacity.get -> int
 Dtls.Core.DtlsConnectionOptions.ReceiveQueueCapacity.set -> void
 Dtls.Core.DtlsConnectionOptions.ReceiveQueueFullMode.get -> System.Threading.Channels.BoundedChannelFullMode
 Dtls.Core.DtlsConnectionOptions.ReceiveQueueFullMode.set -> void
+Dtls.Core.DtlsConnectionOptions.RecordSizeLimit.get -> int
+Dtls.Core.DtlsConnectionOptions.RecordSizeLimit.set -> void
 Dtls.Core.DtlsConnectionOptions.RequireExtendedMasterSecret.get -> bool
 Dtls.Core.DtlsConnectionOptions.RequireExtendedMasterSecret.set -> void
 Dtls.Core.DtlsConnectionOptions.SrtpProtectionProfiles.get -> System.Collections.Generic.IList<Dtls.Core.SrtpProtectionProfile>!
@@ -134,6 +147,8 @@ Dtls.Core.DtlsServerConnectionOptions.ServerAuthenticationOptions.set -> void
 Dtls.Core.IDatagramTransport
 Dtls.Core.IDatagramTransport.ReceiveAsync(System.Memory<byte> buffer, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask<int>
 Dtls.Core.IDatagramTransport.SendAsync(System.ReadOnlyMemory<byte> datagram, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask
+Dtls.Core.IMobileDatagramTransport
+Dtls.Core.IMobileDatagramTransport.FollowLastSender() -> bool
 Dtls.Core.SrtpKeyingMaterial
 Dtls.Core.SrtpKeyingMaterial.<Clone>$() -> Dtls.Core.SrtpKeyingMaterial!
 Dtls.Core.SrtpKeyingMaterial.ClientMasterKey.get -> System.ReadOnlyMemory<byte>
@@ -156,7 +171,9 @@ Dtls.Core.SrtpProtectionProfile.Aes128CmHmacSha132 = 2 -> Dtls.Core.SrtpProtecti
 Dtls.Core.SrtpProtectionProfile.Aes128CmHmacSha180 = 1 -> Dtls.Core.SrtpProtectionProfile
 Dtls.Core.UdpDatagramTransport
 Dtls.Core.UdpDatagramTransport.Dispose() -> void
+Dtls.Core.UdpDatagramTransport.FollowLastSender() -> bool
 Dtls.Core.UdpDatagramTransport.ReceiveAsync(System.Memory<byte> buffer, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask<int>
+Dtls.Core.UdpDatagramTransport.RemoteEndPoint.get -> System.Net.IPEndPoint!
 Dtls.Core.UdpDatagramTransport.SendAsync(System.ReadOnlyMemory<byte> datagram, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask
 Dtls.Core.UdpDatagramTransport.Socket.get -> System.Net.Sockets.Socket!
 Dtls.Core.UdpDatagramTransport.UdpDatagramTransport(System.Net.Sockets.Socket! socket, bool ownsSocket = true) -> void
@@ -173,34 +190,18 @@ static Dtls.Core.DtlsConnection.ConnectAsync(Dtls.Core.IDatagramTransport! trans
 static Dtls.Core.DtlsConnectionStatistics.operator !=(Dtls.Core.DtlsConnectionStatistics left, Dtls.Core.DtlsConnectionStatistics right) -> bool
 static Dtls.Core.DtlsConnectionStatistics.operator ==(Dtls.Core.DtlsConnectionStatistics left, Dtls.Core.DtlsConnectionStatistics right) -> bool
 static Dtls.Core.DtlsFingerprint.Compute(System.Security.Cryptography.X509Certificates.X509Certificate2! certificate, System.Security.Cryptography.HashAlgorithmName? algorithm = null) -> Dtls.Core.DtlsFingerprint
-static Dtls.Core.DtlsFingerprint.operator !=(Dtls.Core.DtlsFingerprint left, Dtls.Core.DtlsFingerprint right) -> bool
-static Dtls.Core.DtlsFingerprint.operator ==(Dtls.Core.DtlsFingerprint left, Dtls.Core.DtlsFingerprint right) -> bool
 static Dtls.Core.DtlsFingerprint.Parse(string! value) -> Dtls.Core.DtlsFingerprint
 static Dtls.Core.DtlsFingerprint.TryParse(string? value, out Dtls.Core.DtlsFingerprint fingerprint) -> bool
+static Dtls.Core.DtlsFingerprint.operator !=(Dtls.Core.DtlsFingerprint left, Dtls.Core.DtlsFingerprint right) -> bool
+static Dtls.Core.DtlsFingerprint.operator ==(Dtls.Core.DtlsFingerprint left, Dtls.Core.DtlsFingerprint right) -> bool
 static Dtls.Core.SrtpKeyingMaterial.operator !=(Dtls.Core.SrtpKeyingMaterial? left, Dtls.Core.SrtpKeyingMaterial? right) -> bool
 static Dtls.Core.SrtpKeyingMaterial.operator ==(Dtls.Core.SrtpKeyingMaterial? left, Dtls.Core.SrtpKeyingMaterial? right) -> bool
+static Dtls.Core.UdpDatagramTransport.Bind(System.Net.IPEndPoint! remoteEndPoint, System.Net.IPEndPoint? localEndPoint = null) -> Dtls.Core.UdpDatagramTransport!
 static Dtls.Core.UdpDatagramTransport.Connect(System.Net.IPEndPoint! remoteEndPoint, System.Net.IPEndPoint? localEndPoint = null) -> Dtls.Core.UdpDatagramTransport!
+static Dtls.Core.UdpDatagramTransport.FromBoundSocket(System.Net.Sockets.Socket! socket, System.Net.IPEndPoint! remoteEndPoint, bool ownsSocket = true) -> Dtls.Core.UdpDatagramTransport!
 static Microsoft.Extensions.DependencyInjection.DtlsServiceCollectionExtensions.AddDtls(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
 static Microsoft.Extensions.DependencyInjection.DtlsServiceCollectionExtensions.AddDtlsClient(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, string! name, System.Action<Dtls.Core.DtlsClientConnectionOptions!>! configure) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
 static Microsoft.Extensions.DependencyInjection.DtlsServiceCollectionExtensions.AddDtlsServer(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, string! name, System.Action<Dtls.Core.DtlsServerConnectionOptions!>! configure) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
 ~override Dtls.Core.DtlsConnectionStatistics.Equals(object obj) -> bool
 ~override Dtls.Core.DtlsConnectionStatistics.ToString() -> string
 ~override Dtls.Core.DtlsFingerprint.Equals(object obj) -> bool
-Dtls.Core.DtlsConnectionOptions.ConnectionIdLength.get -> int?
-Dtls.Core.DtlsConnectionOptions.ConnectionIdLength.set -> void
-Dtls.Core.DtlsConnectionOptions.RecordSizeLimit.get -> int
-Dtls.Core.DtlsConnectionOptions.RecordSizeLimit.set -> void
-Dtls.Core.DtlsConnection.LocalConnectionId.get -> System.ReadOnlyMemory<byte>
-Dtls.Core.DtlsConnection.RemoteConnectionId.get -> System.ReadOnlyMemory<byte>
-Dtls.Core.DtlsConnection.PeerRecordSizeLimit.get -> int
-Dtls.Core.DtlsAlert.TooManyCidsRequested = 52 -> Dtls.Core.DtlsAlert
-Dtls.Core.DtlsConnection.SpareConnectionIds.get -> int
-Dtls.Core.DtlsConnection.IssueConnectionIdsAsync(int count, bool useImmediately = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
-Dtls.Core.DtlsConnection.RequestConnectionIdsAsync(int count, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
-Dtls.Core.DtlsConnection.TryUseNextConnectionId() -> bool
-Dtls.Core.IMobileDatagramTransport
-Dtls.Core.IMobileDatagramTransport.FollowLastSender() -> bool
-Dtls.Core.UdpDatagramTransport.FollowLastSender() -> bool
-Dtls.Core.UdpDatagramTransport.RemoteEndPoint.get -> System.Net.IPEndPoint!
-static Dtls.Core.UdpDatagramTransport.FromBoundSocket(System.Net.Sockets.Socket! socket, System.Net.IPEndPoint! remoteEndPoint, bool ownsSocket = true) -> Dtls.Core.UdpDatagramTransport!
-static Dtls.Core.UdpDatagramTransport.Bind(System.Net.IPEndPoint! remoteEndPoint, System.Net.IPEndPoint? localEndPoint = null) -> Dtls.Core.UdpDatagramTransport!
