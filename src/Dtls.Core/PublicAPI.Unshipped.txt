@@ -190,6 +190,7 @@ static Dtls.Core.DtlsConnection.ConnectAsync(Dtls.Core.IDatagramTransport! trans
 static Dtls.Core.DtlsConnectionStatistics.operator !=(Dtls.Core.DtlsConnectionStatistics left, Dtls.Core.DtlsConnectionStatistics right) -> bool
 static Dtls.Core.DtlsConnectionStatistics.operator ==(Dtls.Core.DtlsConnectionStatistics left, Dtls.Core.DtlsConnectionStatistics right) -> bool
 static Dtls.Core.DtlsFingerprint.Compute(System.Security.Cryptography.X509Certificates.X509Certificate2! certificate, System.Security.Cryptography.HashAlgorithmName? algorithm = null) -> Dtls.Core.DtlsFingerprint
+static Dtls.Core.DtlsFingerprint.CreateValidationCallback(System.Collections.Generic.IEnumerable<Dtls.Core.DtlsFingerprint>! fingerprints) -> System.Net.Security.RemoteCertificateValidationCallback!
 static Dtls.Core.DtlsFingerprint.Parse(string! value) -> Dtls.Core.DtlsFingerprint
 static Dtls.Core.DtlsFingerprint.TryParse(string? value, out Dtls.Core.DtlsFingerprint fingerprint) -> bool
 static Dtls.Core.DtlsFingerprint.operator !=(Dtls.Core.DtlsFingerprint left, Dtls.Core.DtlsFingerprint right) -> bool
