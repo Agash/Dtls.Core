@@ -272,12 +272,21 @@ internal sealed partial class DtlsProtocol
             );
         }
 
+        // RFC 9325 section 3.5: a DTLS 1.2 server that does not acknowledge renegotiation_info is not
+        // safe to connect to, whether or not either side renegotiates (RFC 5746 section 4.1).
         if (
-            hello.Extensions.TryGet(
+            !hello.Extensions.TryGet(
                 ExtensionType.RenegotiationInfo,
                 out ReadOnlySpan<byte> renegotiation
-            ) && !HelloExtensions.IsEmptyRenegotiationInfo(renegotiation)
+            )
         )
+        {
+            throw DtlsException.HandshakeFailure(
+                "the server does not acknowledge renegotiation_info"
+            );
+        }
+
+        if (!HelloExtensions.IsEmptyRenegotiationInfo(renegotiation))
         {
             throw DtlsException.HandshakeFailure("the server's renegotiation_info is not empty");
         }

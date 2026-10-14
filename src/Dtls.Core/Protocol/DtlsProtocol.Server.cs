@@ -8,6 +8,12 @@ namespace Dtls.Core.Protocol;
 // The server's side of the handshake (RFC 6347 §4.2.4 flights 2, 4 and 6).
 internal sealed partial class DtlsProtocol
 {
+    // TLS_EMPTY_RENEGOTIATION_INFO_SCSV (RFC 5746 section 3.3).
+    private const ushort EmptyRenegotiationInfoScsv = 0x00FF;
+
+    private bool _secureRenegotiation;
+    private bool _pointFormatsOffered;
+
     private const int CookieLength = 32;
 
     // Keys the cookie so only this server can have made it; a cookie is valid for this connection's
@@ -249,6 +255,15 @@ internal sealed partial class DtlsProtocol
             throw DtlsException.HandshakeFailure("the client's renegotiation_info is not empty");
         }
 
+        // RFC 5746 section 3.6: the empty extension or the SCSV says the client supports secure
+        // renegotiation, and only then is the extension answered. ec_point_formats is answered only
+        // when the client sent it (RFC 8422 section 5.2); no extension goes back unasked (RFC 5246
+        // section 7.4.1.4).
+        _secureRenegotiation =
+            extensions.Contains(ExtensionType.RenegotiationInfo)
+            || hello.CipherSuites.Contains(EmptyRenegotiationInfoScsv);
+        _pointFormatsOffered = extensions.Contains(ExtensionType.EcPointFormats);
+
         if (
             extensions.TryGet(ExtensionType.EcPointFormats, out ReadOnlySpan<byte> formats)
             && !HelloExtensions.OffersUncompressedPoints(formats)
@@ -332,9 +347,20 @@ internal sealed partial class DtlsProtocol
     private void SendServerHelloFlight()
     {
         LocalCredential credential = _settings.Credential!;
-        Extensions extensions = new Extensions()
-            .Add(ExtensionType.RenegotiationInfo, HelloExtensions.EmptyRenegotiationInfo())
-            .Add(ExtensionType.EcPointFormats, HelloExtensions.PointFormats());
+        Extensions extensions = new();
+        if (_secureRenegotiation)
+        {
+            _ = extensions.Add(
+                ExtensionType.RenegotiationInfo,
+                HelloExtensions.EmptyRenegotiationInfo()
+            );
+        }
+
+        if (_pointFormatsOffered)
+        {
+            _ = extensions.Add(ExtensionType.EcPointFormats, HelloExtensions.PointFormats());
+        }
+
         if (_extendedMasterSecret)
         {
             _ = extensions.Add(ExtensionType.ExtendedMasterSecret, []);

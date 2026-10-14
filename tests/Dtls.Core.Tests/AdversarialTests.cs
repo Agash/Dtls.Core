@@ -1,4 +1,8 @@
+using System.Buffers.Binary;
+using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
+using Dtls.Core.Handshake;
+using Dtls.Core.Wire;
 
 namespace Dtls.Core.Tests;
 
@@ -151,6 +155,172 @@ public sealed class AdversarialTests
                 .WaitAsync(s_timeout, TestContext.CancellationToken);
             CollectionAssert.AreEqual("early"u8.ToArray(), buffer[..length]);
         }
+    }
+
+    // RFC 8446 section 6: in DTLS 1.3 every alert but close_notify and user_canceled is an error at any
+    // level; DTLS 1.2 keeps warnings as warnings (RFC 5246 section 7.2).
+    [TestMethod]
+    [DataRow(DtlsProtocols.Dtls13, DtlsAlert.DecodeError, true)]
+    [DataRow(DtlsProtocols.Dtls13, DtlsAlert.UserCanceled, false)]
+    [DataRow(DtlsProtocols.Dtls12, DtlsAlert.DecodeError, false)]
+    public async Task WarningAlert_IsAnErrorOnlyInDtls13(
+        DtlsProtocols version,
+        DtlsAlert alert,
+        bool fails
+    )
+    {
+        Path path = new();
+        (DtlsConnection client, DtlsConnection server) = await ConnectAsync(path, version);
+        await using (client)
+        await using (server)
+        {
+            await client.SendAlertForTestAsync(alert, fatal: false);
+            if (fails)
+            {
+                _ = await Assert.ThrowsExactlyAsync<DtlsException>(() =>
+                    server
+                        .ReceiveAsync(new byte[64], TestContext.CancellationToken)
+                        .AsTask()
+                        .WaitAsync(s_timeout, TestContext.CancellationToken)
+                );
+                Assert.IsTrue(server.IsFailed);
+            }
+            else
+            {
+                await TalkAsync(client, server, rounds: 2);
+                Assert.IsFalse(server.IsFailed);
+            }
+        }
+    }
+
+    // RFC 9325 section 3.5 and RFC 5746 section 3.6: a ClientHello without renegotiation_info (or its
+    // SCSV) gets a ServerHello without it, and a DTLS 1.2 client refuses a server that does not
+    // acknowledge it, before anything else of the handshake is checked.
+    [TestMethod]
+    public async Task RenegotiationInfo_NotAcknowledged_FailsTheDtls12Handshake()
+    {
+        bool serverHelloWithout = false;
+        Path path = new(
+            transform: datagram =>
+                WithoutClientHelloExtension(datagram, ExtensionType.RenegotiationInfo),
+            observe: datagram =>
+                serverHelloWithout |= IsServerHelloWithout(
+                    datagram,
+                    ExtensionType.RenegotiationInfo
+                )
+        );
+
+        using X509Certificate2 clientCertificate = DtlsCertificates.CreateSelfSigned();
+        using X509Certificate2 serverCertificate = DtlsCertificates.CreateSelfSigned();
+        DtlsClientConnectionOptions clientOptions = HandshakeTests.Client(
+            clientCertificate,
+            serverCertificate
+        );
+        DtlsServerConnectionOptions serverOptions = HandshakeTests.Server(
+            serverCertificate,
+            clientCertificate,
+            cookieExchange: true
+        );
+        clientOptions.EnabledProtocols = DtlsProtocols.Dtls12;
+        serverOptions.EnabledProtocols = DtlsProtocols.Dtls12;
+        Task<DtlsConnection> server = DtlsConnection
+            .AcceptAsync(path.Pair.Server, serverOptions, TestContext.CancellationToken)
+            .AsTask();
+
+        AuthenticationException failed = await Assert.ThrowsExactlyAsync<AuthenticationException>(
+            () =>
+                DtlsConnection
+                    .ConnectAsync(path.Pair.Client, clientOptions, TestContext.CancellationToken)
+                    .AsTask()
+                    .WaitAsync(s_timeout, TestContext.CancellationToken)
+        );
+        _ = await Assert.ThrowsExactlyAsync<AuthenticationException>(() =>
+            server.WaitAsync(s_timeout, TestContext.CancellationToken)
+        );
+
+        Assert.Contains("renegotiation_info", failed.Message);
+        Assert.IsTrue(
+            serverHelloWithout,
+            "the server answered no extension the client did not send"
+        );
+    }
+
+    // A ClientHello datagram with one extension removed; anything else is returned as it is.
+    private static byte[] WithoutClientHelloExtension(byte[] datagram, ushort type)
+    {
+        if (!TryHandshake(datagram, HandshakeType.ClientHello, out ReadOnlySpan<byte> body))
+        {
+            return datagram;
+        }
+
+        ClientHello hello = ClientHello.Decode(body);
+        if (!hello.Extensions.Contains(type))
+        {
+            return datagram;
+        }
+
+        Extensions kept = new();
+        foreach (ushort other in hello.Extensions.Types.Where(t => t != type))
+        {
+            _ = hello.Extensions.TryGet(other, out ReadOnlySpan<byte> data);
+            _ = kept.Add(other, data);
+        }
+
+        WireWriter writer = new();
+        (hello with { Extensions = kept }).Encode(writer);
+        byte[] encoded = writer.Written.ToArray();
+
+        // Record header (13), handshake header (12), the new body; one unfragmented message.
+        byte[] rewritten = new byte[13 + 12 + encoded.Length];
+        datagram.AsSpan(0, 13 + 6).CopyTo(rewritten);
+        BinaryPrimitives.WriteUInt16BigEndian(rewritten.AsSpan(11), (ushort)(12 + encoded.Length));
+        WriteUInt24(rewritten.AsSpan(14), encoded.Length);
+        WriteUInt24(rewritten.AsSpan(13 + 6), 0);
+        WriteUInt24(rewritten.AsSpan(13 + 9), encoded.Length);
+        encoded.CopyTo(rewritten.AsSpan(13 + 12));
+        return rewritten;
+
+        static void WriteUInt24(Span<byte> span, int value)
+        {
+            span[0] = (byte)(value >> 16);
+            span[1] = (byte)(value >> 8);
+            span[2] = (byte)value;
+        }
+    }
+
+    private static bool IsServerHelloWithout(byte[] datagram, ushort type) =>
+        TryHandshake(datagram, HandshakeType.ServerHello, out ReadOnlySpan<byte> body)
+        && !ServerHello.Decode(body).Extensions.Contains(type);
+
+    // The datagram's first record, when it is an epoch-0 handshake record holding one whole message of
+    // the given type.
+    private static bool TryHandshake(
+        byte[] datagram,
+        HandshakeType type,
+        out ReadOnlySpan<byte> body
+    )
+    {
+        body = default;
+        if (
+            datagram.Length < 25
+            || datagram[0] != 22
+            || BinaryPrimitives.ReadUInt16BigEndian(datagram.AsSpan(3)) != 0
+            || datagram[13] != (byte)type
+        )
+        {
+            return false;
+        }
+
+        int length = (datagram[14] << 16) | (datagram[15] << 8) | datagram[16];
+        int offset = (datagram[19] << 16) | (datagram[20] << 8) | datagram[21];
+        int fragment = (datagram[22] << 16) | (datagram[23] << 8) | datagram[24];
+        if (offset != 0 || fragment != length || 25 + length > datagram.Length)
+        {
+            return false;
+        }
+
+        body = datagram.AsSpan(25, length);
+        return true;
     }
 
     [TestMethod]
@@ -432,11 +602,12 @@ public sealed class AdversarialTests
         public Path(
             Func<byte[], byte[][]>? forge = null,
             Action<byte[]>? observe = null,
-            bool forgeFirst = false
+            bool forgeFirst = false,
+            Func<byte[], byte[]>? transform = null
         )
         {
-            ToServer = new Direction(forge, observe, forgeFirst);
-            ToClient = new Direction(forge, observe, forgeFirst);
+            ToServer = new Direction(forge, observe, forgeFirst, transform);
+            ToClient = new Direction(forge, observe, forgeFirst, transform);
             ToServer.Name = "C->S";
             ToClient.Name = "S->C";
             Pair = new DatagramPair(toServer: ToServer.Filter, toClient: ToClient.Filter);
@@ -454,7 +625,8 @@ public sealed class AdversarialTests
     private sealed class Direction(
         Func<byte[], byte[][]>? forge,
         Action<byte[]>? observe,
-        bool forgeFirst
+        bool forgeFirst,
+        Func<byte[], byte[]>? transform
     )
     {
         private static readonly Lock s_forging = new();
@@ -500,6 +672,16 @@ public sealed class AdversarialTests
 
         public bool Filter(int index, byte[] datagram)
         {
+            // A rewritten datagram goes in place of the original, as an active attacker's would.
+            if (
+                transform?.Invoke(datagram) is { } rewritten
+                && !ReferenceEquals(rewritten, datagram)
+            )
+            {
+                Deliver(rewritten);
+                return false;
+            }
+
             if (observe is not null)
             {
                 lock (_lock)
