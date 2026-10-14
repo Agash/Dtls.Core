@@ -647,7 +647,13 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
             return;
         }
 
-        if (payload[0] == FatalLevel)
+        // RFC 8446 section 6: in (D)TLS 1.3 the closure alerts are close_notify and user_canceled; every
+        // other alert, unknown ones included, is an error whatever level it was sent at (section 6.2).
+        // user_canceled is followed by a close_notify, which closes.
+        bool error =
+            payload[0] == FatalLevel
+            || (_version == DtlsProtocols.Dtls13 && alert != DtlsAlert.UserCanceled);
+        if (error)
         {
             Fail(DtlsException.FromPeer(alert), sendAlert: false);
             return;

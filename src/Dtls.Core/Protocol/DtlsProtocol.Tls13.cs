@@ -46,6 +46,8 @@ internal sealed partial class DtlsProtocol
         Transmit(flight);
     }
 
+    internal void SendAlertForTest(DtlsAlert alert, bool fatal) => SendAlert(alert, fatal);
+
     private void Receive13(HandshakeMessage message)
     {
         if (Role == DtlsRole.Client)

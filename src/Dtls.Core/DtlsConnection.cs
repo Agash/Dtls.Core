@@ -483,6 +483,17 @@ public sealed class DtlsConnection : IAsyncDisposable
         await FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    // For tests: sends an alert at a level the protocol would not choose.
+    internal async ValueTask SendAlertForTestAsync(DtlsAlert alert, bool fatal)
+    {
+        lock (_lock)
+        {
+            _protocol.SendAlertForTest(alert, fatal);
+        }
+
+        await FlushAsync(CancellationToken.None).ConfigureAwait(false);
+    }
+
     /// <summary>Closes the connection, telling the peer with a close_notify alert.</summary>
     /// <param name="cancellationToken">Cancels sending the alert.</param>
     /// <returns>A task that completes when the alert has been sent.</returns>
