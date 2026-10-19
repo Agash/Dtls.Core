@@ -27,6 +27,13 @@ public abstract class DtlsConnectionOptions
     public int? ConnectionIdLength { get; set; } = 0;
 
     /// <summary>
+    /// How a new address of the peer is checked before the connection sends there, once connection IDs
+    /// let it recognise the peer anywhere (RFC 9146 section 6). The return routability check by default.
+    /// </summary>
+    public DtlsPeerAddressValidation PeerAddressValidation { get; set; } =
+        DtlsPeerAddressValidation.ReturnRoutabilityCheck;
+
+    /// <summary>
     /// The most plaintext this side takes in a protected record (RFC 8449), advertised to the peer:
     /// 64 to 16384 bytes, the protocol maximum by default. A constrained receiver sets less.
     /// </summary>

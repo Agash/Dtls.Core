@@ -53,8 +53,10 @@ internal sealed partial class DtlsProtocol
                         or ExtensionType.KeyShare
                         or ExtensionType.Cookie
                         or ExtensionType.ConnectionId
+                        or ExtensionType.ReturnRoutabilityCheck
                     )
                 || (type == ExtensionType.ConnectionId && _localConnectionId is null)
+                || (type == ExtensionType.ReturnRoutabilityCheck && !OffersReturnRoutability)
             )
             {
                 throw new DtlsException(
@@ -92,6 +94,7 @@ internal sealed partial class DtlsProtocol
 
         _peerRandom = hello.Random;
         AcceptConnectionId(hello.Extensions);
+        AcceptReturnRoutability(hello.Extensions);
         _transcript13!.Add13(message.Type, message.Body);
         byte[] shared = _keyShare13.DeriveSecret(key);
         DeriveHandshakeSecrets(shared);
@@ -232,6 +235,7 @@ internal sealed partial class DtlsProtocol
                         or ExtensionType.RenegotiationInfo
                         or ExtensionType.EcPointFormats
                         or ExtensionType.ConnectionId
+                        or ExtensionType.ReturnRoutabilityCheck
             )
             {
                 throw new DtlsException(

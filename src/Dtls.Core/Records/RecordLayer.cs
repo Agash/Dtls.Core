@@ -72,6 +72,7 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
     private (ushort Epoch, ulong Sequence) _newest;
     private readonly List<ReadState> _read = [new(0, null, null)];
     private readonly Queue<OutgoingDatagram> _datagrams = [];
+    private readonly Queue<OutgoingDatagram> _toSender = new();
     private byte[]? _building;
     private int _buildingLength;
 
@@ -309,6 +310,21 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
         return _datagrams.TryDequeue(out datagram);
     }
 
+    // Ends the datagram being built as one for the sender of the last received datagram, rather than
+    // for the peer's bound address.
+    public void FlushToSender()
+    {
+        if (_buildingLength > 0)
+        {
+            _toSender.Enqueue(new OutgoingDatagram(_building!, _buildingLength));
+            _building = null;
+            _buildingLength = 0;
+        }
+    }
+
+    public bool TryDequeueToSender(out OutgoingDatagram datagram) =>
+        _toSender.TryDequeue(out datagram);
+
     // Opens the records of a received datagram in place and hands each to the handler. What does not
     // parse, authenticate, belong to a readable epoch or is a replay is dropped silently (RFC 6347
     // §4.1.2.7, RFC 9147 §4.5.2) and counted: an attacker who can inject datagrams must not be able to
@@ -355,6 +371,11 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
         }
 
         while (_datagrams.TryDequeue(out OutgoingDatagram datagram))
+        {
+            datagram.Return();
+        }
+
+        while (_toSender.TryDequeue(out OutgoingDatagram datagram))
         {
             datagram.Return();
         }

@@ -23,6 +23,7 @@ internal sealed class ProtocolSettings : IDisposable
         _enabled = options.EnabledProtocols;
         MaximumDatagramSize = options.MaximumDatagramSize;
         ConnectionIdLength = options.ConnectionIdLength;
+        PeerAddressValidation = options.PeerAddressValidation;
         RecordSizeLimit = options.RecordSizeLimit;
         HandshakeTimeout = options.HandshakeTimeout;
         InitialRetransmissionTimeout = options.InitialRetransmissionTimeout;
@@ -65,6 +66,8 @@ internal sealed class ProtocolSettings : IDisposable
     public int MaximumDatagramSize { get; }
 
     public int? ConnectionIdLength { get; }
+
+    public DtlsPeerAddressValidation PeerAddressValidation { get; }
 
     public int RecordSizeLimit { get; }
 

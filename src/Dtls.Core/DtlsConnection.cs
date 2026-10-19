@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Net;
 using System.Net.Security;
 using System.Runtime.ExceptionServices;
 using System.Security.Authentication;
@@ -47,6 +48,7 @@ public sealed class DtlsConnection : IAsyncDisposable
     private readonly IDatagramTransport _transport;
     private readonly ITimer _timer;
     private readonly CancellationTokenSource _stop = new();
+    private bool _warnedPeerNotFollowed;
     private readonly TaskCompletionSource _handshake = new(
         TaskCreationOptions.RunContinuationsAsynchronously
     );
@@ -453,6 +455,9 @@ public sealed class DtlsConnection : IAsyncDisposable
     // For tests: whether the connection failed.
     internal bool IsFailed => _protocol.State == ProtocolState.Failed;
 
+    // For tests: whether both sides agreed on the return routability check.
+    internal bool ReturnRoutabilityCheckAgreed => _protocol.ReturnRoutabilityCheckAgreed;
+
     // For tests: sends a handshake message in an epoch the protocol would not choose.
     internal async ValueTask SendHandshakeForTestAsync(ushort epoch, byte type, byte[] body)
     {
@@ -583,22 +588,12 @@ public sealed class DtlsConnection : IAsyncDisposable
             {
                 int length = await _transport.ReceiveAsync(buffer, stop).ConfigureAwait(false);
                 bool open;
+                EndPoint? sender;
                 lock (_lock)
                 {
                     _applicationData.Clear();
                     _protocol.Receive(buffer.AsSpan(0, length), _applicationData);
-                    if (
-                        _protocol.PeerMayHaveMoved
-                        && _transport is IMobileDatagramTransport mobile
-                        && mobile.FollowLastSender()
-                    )
-                    {
-                        _protocol.LogPeerMoved(
-                            mobile is UdpDatagramTransport udp
-                                ? udp.RemoteEndPoint.ToString()
-                                : mobile.GetType().Name
-                        );
-                    }
+                    sender = FollowPeer();
                     foreach (Range range in _applicationData)
                     {
                         ReceivedRecord record = ReceivedRecord.Copy(buffer.AsSpan(range));
@@ -612,6 +607,7 @@ public sealed class DtlsConnection : IAsyncDisposable
                     open = _protocol.State is ProtocolState.Handshaking or ProtocolState.Connected;
                 }
 
+                await ReplyToSenderAsync(sender, stop).ConfigureAwait(false);
                 await FlushAsync(stop).ConfigureAwait(false);
                 if (!open)
                 {
@@ -636,6 +632,91 @@ public sealed class DtlsConnection : IAsyncDisposable
         finally
         {
             ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    // RFC 9146 section 6: a record that authenticated, carried this side's CID and was newer than any
+    // before it came from a new address. The peer is followed there at once when the application
+    // validates addresses, and after a return routability check otherwise; a peer that takes no check
+    // is not followed. Returns where the datagram came from, for the check's messages. Runs under the
+    // lock, right after the receive that returned the datagram.
+    private EndPoint? FollowPeer()
+    {
+        if (_transport is not IMobileDatagramTransport mobile)
+        {
+            return null;
+        }
+
+        if (_protocol.PeerMayHaveMoved && mobile.LastSenderMoved)
+        {
+            if (_settings.PeerAddressValidation == DtlsPeerAddressValidation.Application)
+            {
+                Follow(mobile);
+            }
+            else if (_protocol.ReturnRoutabilityCheckAgreed)
+            {
+                _ = _protocol.ChallengePath();
+            }
+            else if (!_warnedPeerNotFollowed)
+            {
+                _warnedPeerNotFollowed = true;
+                _protocol.LogPeerNotFollowed();
+            }
+        }
+
+        if (_protocol.TakePathValidated())
+        {
+            Follow(mobile);
+        }
+
+        return mobile.LastSender;
+
+        void Follow(IMobileDatagramTransport mobile)
+        {
+            if (mobile.FollowLastSender())
+            {
+                _protocol.LogPeerMoved(mobile.LastSender?.ToString() ?? mobile.GetType().Name);
+            }
+        }
+    }
+
+    // Sends the return routability check's messages to where the datagram that called for them came from
+    // (draft-ietf-tls-dtls-rrc section 5.4), before the next receive moves that on.
+    private async ValueTask ReplyToSenderAsync(
+        EndPoint? sender,
+        CancellationToken cancellationToken
+    )
+    {
+        while (true)
+        {
+            OutgoingDatagram datagram;
+            lock (_lock)
+            {
+                if (_disposed || !_protocol.TryDequeueToSender(out datagram))
+                {
+                    return;
+                }
+            }
+
+            try
+            {
+                if (sender is not null && _transport is IMobileDatagramTransport mobile)
+                {
+                    await mobile
+                        .SendToAsync(datagram.Memory, sender, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    await _transport
+                        .SendAsync(datagram.Memory, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                datagram.Return();
+            }
         }
     }
 

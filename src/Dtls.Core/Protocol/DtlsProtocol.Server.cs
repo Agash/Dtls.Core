@@ -300,6 +300,7 @@ internal sealed partial class DtlsProtocol
     private void SelectSrtpAndApplicationProtocol(Extensions extensions)
     {
         SelectConnectionId(extensions);
+        SelectReturnRoutability(extensions);
         AcceptRecordSizeLimit(extensions);
         if (!_settings.SrtpProfiles.IsEmpty)
         {
@@ -380,6 +381,7 @@ internal sealed partial class DtlsProtocol
         }
 
         AnswerConnectionId(extensions);
+        AnswerReturnRoutability(extensions);
         AnswerRecordSizeLimit(extensions);
 
         Flight flight = new();

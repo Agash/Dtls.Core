@@ -54,6 +54,8 @@ internal sealed partial class DtlsProtocol
             );
         }
 
+        OfferReturnRoutability(extensions);
+
         // RFC 8449 §4: advertised even without a need to limit, which lets the server advertise its own.
         _ = extensions.Add(
             ExtensionType.RecordSizeLimit,
@@ -244,10 +246,12 @@ internal sealed partial class DtlsProtocol
                         or ExtensionType.UseSrtp
                         or ExtensionType.ApplicationLayerProtocolNegotiation
                         or ExtensionType.ConnectionId
+                        or ExtensionType.ReturnRoutabilityCheck
                         or ExtensionType.RecordSizeLimit
                     )
                 || (type == ExtensionType.UseSrtp && _settings.SrtpProfiles.IsEmpty)
                 || (type == ExtensionType.ConnectionId && _localConnectionId is null)
+                || (type == ExtensionType.ReturnRoutabilityCheck && !OffersReturnRoutability)
                 || (
                     type == ExtensionType.ApplicationLayerProtocolNegotiation
                     && _settings.ApplicationProtocols.IsEmpty
@@ -263,6 +267,7 @@ internal sealed partial class DtlsProtocol
         }
 
         AcceptConnectionId(hello.Extensions);
+        AcceptReturnRoutability(hello.Extensions);
         AcceptRecordSizeLimit(hello.Extensions);
         _extendedMasterSecret = hello.Extensions.Contains(ExtensionType.ExtendedMasterSecret);
         if (!_extendedMasterSecret && _settings.RequireExtendedMasterSecret)

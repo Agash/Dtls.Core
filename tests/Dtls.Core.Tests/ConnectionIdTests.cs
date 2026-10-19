@@ -335,6 +335,49 @@ public sealed class ConnectionIdTests
         CollectionAssert.AreEqual(message, buffer.AsSpan(0, length).ToArray());
     }
 
+    // draft-ietf-tls-dtls-rrc-20 section 3: rrc goes with connection_id, both sides have to offer it,
+    // and a side whose application validates addresses does not.
+    [TestMethod]
+    [DataRow(DtlsProtocols.Dtls12, 8, true, true, true)]
+    [DataRow(DtlsProtocols.Dtls13, 8, true, true, true)]
+    [DataRow(DtlsProtocols.Dtls13, 8, true, false, false)]
+    [DataRow(DtlsProtocols.Dtls13, 8, false, true, false)]
+    [DataRow(DtlsProtocols.Dtls12, null, true, true, false)]
+    public async Task ReturnRoutabilityCheck_IsAgreedOnlyWithConnectionIdsOnBothSides(
+        DtlsProtocols version,
+        int? cid,
+        bool clientChecks,
+        bool serverChecks,
+        bool agreed
+    )
+    {
+        static DtlsPeerAddressValidation Validation(bool checks) =>
+            checks
+                ? DtlsPeerAddressValidation.ReturnRoutabilityCheck
+                : DtlsPeerAddressValidation.Application;
+
+        (DtlsConnection client, DtlsConnection server) = await ConnectAsync(
+            new DatagramPair(),
+            version,
+            c =>
+            {
+                c.ConnectionIdLength = cid;
+                c.PeerAddressValidation = Validation(clientChecks);
+            },
+            s =>
+            {
+                s.ConnectionIdLength = cid;
+                s.PeerAddressValidation = Validation(serverChecks);
+            }
+        );
+        await using (client)
+        await using (server)
+        {
+            Assert.AreEqual(agreed, client.ReturnRoutabilityCheckAgreed);
+            Assert.AreEqual(agreed, server.ReturnRoutabilityCheckAgreed);
+        }
+    }
+
     private async Task<(DtlsConnection Client, DtlsConnection Server)> ConnectAsync(
         DatagramPair path,
         DtlsProtocols version,

@@ -140,7 +140,10 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
 
     // When OnTimer should next run, as a TimeProvider timestamp; long.MaxValue when nothing waits.
     public long Deadline =>
-        Math.Min(_flightTimed ? _retransmitAt : long.MaxValue, _handshakeDeadline);
+        Math.Min(
+            Math.Min(_flightTimed ? _retransmitAt : long.MaxValue, _handshakeDeadline),
+            _pathDeadline
+        );
 
     // Starts the handshake: a client sends its ClientHello; a server waits for one.
     public void Start()
@@ -228,6 +231,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
             return;
         }
 
+        ExpirePathValidation(now);
         if (_flightTimed && now >= _retransmitAt)
         {
             // RFC 6347 §4.2.4.1: double the timer on each retransmission, up to 60 seconds.
@@ -430,6 +434,12 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
                 break;
             case ContentType.Ack when tls13:
                 ReceiveAck(payload);
+                break;
+            case ContentType.ReturnRoutabilityCheck
+                when ReturnRoutabilityCheckAgreed
+                    && State == ProtocolState.Connected
+                    && (tls13 ? epoch >= ApplicationEpoch : current && epoch > 0):
+                ReceiveReturnRoutability(payload);
                 break;
             // Data after the peer's close_notify is ignored (RFC 8446 section 6.1).
             case ContentType.ApplicationData

@@ -184,6 +184,42 @@ public sealed class UdpDatagramTransport : IMobileDatagramTransport, IDisposable
     }
 
     /// <inheritdoc/>
+    /// <remarks>A connected socket hears only its peer, so this is always that peer.</remarks>
+    public EndPoint? LastSender =>
+        _lastSender is { Size: > 0 } sender ? new IPEndPoint(IPAddress.Any, 0).Create(sender)
+        : Volatile.Read(ref _peer) is null ? Socket.RemoteEndPoint
+        : null;
+
+    /// <inheritdoc/>
+    public bool LastSenderMoved =>
+        _lastSender is { Size: > 0 } sender && !sender.Equals(Volatile.Read(ref _peer));
+
+    /// <inheritdoc/>
+    /// <remarks>A connected socket sends only to its peer, which is where its datagrams come from.</remarks>
+    public async ValueTask SendToAsync(
+        ReadOnlyMemory<byte> datagram,
+        EndPoint destination,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        try
+        {
+            _ = Volatile.Read(ref _peer) is null
+                ? await Socket
+                    .SendAsync(datagram, SocketFlags.None, cancellationToken)
+                    .ConfigureAwait(false)
+                : await Socket
+                    .SendToAsync(datagram, SocketFlags.None, destination, cancellationToken)
+                    .ConfigureAwait(false);
+        }
+        catch (SocketException error) when (IsRefusal(error))
+        {
+            // Deliberately not logged: a refused datagram is a lost datagram, as in SendAsync.
+        }
+    }
+
+    /// <inheritdoc/>
     /// <remarks>A connected socket has one peer address, so it never changes.</remarks>
     public bool FollowLastSender()
     {

@@ -77,6 +77,8 @@ Dtls.Core.DtlsConnectionOptions.MaximumDatagramSize.get -> int
 Dtls.Core.DtlsConnectionOptions.MaximumDatagramSize.set -> void
 Dtls.Core.DtlsConnectionOptions.MaximumHandshakeMessageSize.get -> int
 Dtls.Core.DtlsConnectionOptions.MaximumHandshakeMessageSize.set -> void
+Dtls.Core.DtlsConnectionOptions.PeerAddressValidation.get -> Dtls.Core.DtlsPeerAddressValidation
+Dtls.Core.DtlsConnectionOptions.PeerAddressValidation.set -> void
 Dtls.Core.DtlsConnectionOptions.ReceiveQueueCapacity.get -> int
 Dtls.Core.DtlsConnectionOptions.ReceiveQueueCapacity.set -> void
 Dtls.Core.DtlsConnectionOptions.ReceiveQueueFullMode.get -> System.Threading.Channels.BoundedChannelFullMode
@@ -134,6 +136,9 @@ Dtls.Core.DtlsKeyType
 Dtls.Core.DtlsKeyType.EcdsaP256 = 0 -> Dtls.Core.DtlsKeyType
 Dtls.Core.DtlsKeyType.EcdsaP384 = 1 -> Dtls.Core.DtlsKeyType
 Dtls.Core.DtlsKeyType.Rsa2048 = 2 -> Dtls.Core.DtlsKeyType
+Dtls.Core.DtlsPeerAddressValidation
+Dtls.Core.DtlsPeerAddressValidation.Application = 1 -> Dtls.Core.DtlsPeerAddressValidation
+Dtls.Core.DtlsPeerAddressValidation.ReturnRoutabilityCheck = 0 -> Dtls.Core.DtlsPeerAddressValidation
 Dtls.Core.DtlsProtocols
 Dtls.Core.DtlsProtocols.Dtls12 = 1 -> Dtls.Core.DtlsProtocols
 Dtls.Core.DtlsProtocols.Dtls13 = 2 -> Dtls.Core.DtlsProtocols
@@ -149,6 +154,9 @@ Dtls.Core.IDatagramTransport.ReceiveAsync(System.Memory<byte> buffer, System.Thr
 Dtls.Core.IDatagramTransport.SendAsync(System.ReadOnlyMemory<byte> datagram, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask
 Dtls.Core.IMobileDatagramTransport
 Dtls.Core.IMobileDatagramTransport.FollowLastSender() -> bool
+Dtls.Core.IMobileDatagramTransport.LastSender.get -> System.Net.EndPoint?
+Dtls.Core.IMobileDatagramTransport.LastSenderMoved.get -> bool
+Dtls.Core.IMobileDatagramTransport.SendToAsync(System.ReadOnlyMemory<byte> datagram, System.Net.EndPoint! destination, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask
 Dtls.Core.SrtpKeyingMaterial
 Dtls.Core.SrtpKeyingMaterial.<Clone>$() -> Dtls.Core.SrtpKeyingMaterial!
 Dtls.Core.SrtpKeyingMaterial.ClientMasterKey.get -> System.ReadOnlyMemory<byte>
@@ -172,9 +180,12 @@ Dtls.Core.SrtpProtectionProfile.Aes128CmHmacSha180 = 1 -> Dtls.Core.SrtpProtecti
 Dtls.Core.UdpDatagramTransport
 Dtls.Core.UdpDatagramTransport.Dispose() -> void
 Dtls.Core.UdpDatagramTransport.FollowLastSender() -> bool
+Dtls.Core.UdpDatagramTransport.LastSender.get -> System.Net.EndPoint?
+Dtls.Core.UdpDatagramTransport.LastSenderMoved.get -> bool
 Dtls.Core.UdpDatagramTransport.ReceiveAsync(System.Memory<byte> buffer, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask<int>
 Dtls.Core.UdpDatagramTransport.RemoteEndPoint.get -> System.Net.IPEndPoint!
 Dtls.Core.UdpDatagramTransport.SendAsync(System.ReadOnlyMemory<byte> datagram, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask
+Dtls.Core.UdpDatagramTransport.SendToAsync(System.ReadOnlyMemory<byte> datagram, System.Net.EndPoint! destination, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask
 Dtls.Core.UdpDatagramTransport.Socket.get -> System.Net.Sockets.Socket!
 Dtls.Core.UdpDatagramTransport.UdpDatagramTransport(System.Net.Sockets.Socket! socket, bool ownsSocket = true) -> void
 Microsoft.Extensions.DependencyInjection.DtlsServiceCollectionExtensions

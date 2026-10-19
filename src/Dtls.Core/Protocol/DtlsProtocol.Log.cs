@@ -106,4 +106,28 @@ internal sealed partial class DtlsProtocol
         "The peer shut down its sending; this side may still send"
     )]
     private partial void LogPeerShutDown();
+
+    [LoggerMessage(
+        20,
+        LogLevel.Debug,
+        "Records came from a new address; sending it a path_challenge"
+    )]
+    private partial void LogPathChallenged();
+
+    [LoggerMessage(21, LogLevel.Debug, "The new address answered the path_challenge")]
+    private partial void LogPathValidated();
+
+    [LoggerMessage(
+        22,
+        LogLevel.Information,
+        "The new address did not answer the path_challenge within {Timeout}; the peer stays where it was"
+    )]
+    private partial void LogPathNotValidated(TimeSpan timeout);
+
+    [LoggerMessage(
+        23,
+        LogLevel.Information,
+        "Records came from a new address, but the peer takes no return routability check; it is not followed (RFC 9146 section 6)"
+    )]
+    internal partial void LogPeerNotFollowed();
 }

@@ -43,6 +43,9 @@ internal static class ExtensionType
 
     // RFC 9146.
     public const ushort ConnectionId = 54;
+
+    // rrc (draft-ietf-tls-dtls-rrc section 3), IANA's early allocation.
+    public const ushort ReturnRoutabilityCheck = 61;
     public const ushort ApplicationLayerProtocolNegotiation = 16;
     public const ushort RenegotiationInfo = 0xFF01;
 }

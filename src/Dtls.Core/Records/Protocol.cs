@@ -13,6 +13,9 @@ internal enum ContentType : byte
 
     // DTLS 1.3 (RFC 9147 §7).
     Ack = 26,
+
+    // The return routability check's messages (draft-ietf-tls-dtls-rrc), IANA's early allocation.
+    ReturnRoutabilityCheck = 27,
 }
 
 // The DTLS version numbers, the one's complement of the TLS numbers they correspond to (RFC 6347
