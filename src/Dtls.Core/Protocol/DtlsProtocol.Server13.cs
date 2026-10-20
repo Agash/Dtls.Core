@@ -91,7 +91,12 @@ internal sealed partial class DtlsProtocol
 
         List<(NamedGroup Group, byte[] Key)> shares = Messages13.ReadClientKeyShares(shareData);
         List<NamedGroup> groups = HelloExtensions.ReadSupportedGroups(groupData);
-        (NamedGroup shareGroup, byte[]? shareKey) = shares.Find(s => KeyShare.IsSupported(s.Group));
+        // RFC 8446 section 4.2.8: of the shares the client sent, the one this server prefers. A client
+        // that sent none this server uses gets a HelloRetryRequest; one whose share is usable but not
+        // preferred is not asked again, which would cost a round trip.
+        (NamedGroup shareGroup, byte[]? shareKey) = KeyShare
+            .SupportedGroups.Select(g => shares.Find(s => s.Group == g))
+            .FirstOrDefault(static s => s.Key is not null);
         _suite = suite;
 
         if (extensions.TryGet(ExtensionType.Cookie, out ReadOnlySpan<byte> cookieData))

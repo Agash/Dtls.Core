@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.RegularExpressions;
+using Dtls.Core.Crypto;
 using Dtls.Core.Handshake;
 
 namespace Dtls.Core.Tests;
@@ -62,6 +63,7 @@ public sealed partial class WolfSslInteropTests
                 .WaitAsync(s_timeout, TestContext.CancellationToken);
 
             Assert.AreEqual(expected, connection.NegotiatedProtocol);
+            Assert.AreEqual(NamedGroup.X25519, connection.NegotiatedGroup, "offered first");
             Assert.AreEqual(
                 await server.WaitForAsync(KeyingMaterial(), TestContext.CancellationToken),
                 Export(connection)
@@ -278,8 +280,9 @@ public sealed partial class WolfSslInteropTests
     // DTLS-SRTP's keying material, as wolfSSL exports it: no context.
     private static string Export(DtlsConnection connection)
     {
-        // RFC 9325 section 4.2.1: both sides prefer X25519.
-        Assert.AreEqual(NamedGroup.X25519, connection.NegotiatedGroup);
+        // RFC 9325 section 4.2.1 prefers X25519, which Dtls.Core offers first. wolfSSL's DTLS 1.3 client
+        // sends a P-256 share, which this server takes rather than ask again (RFC 8446 section 4.2.8).
+        Assert.IsTrue(KeyShare.IsSupported(connection.NegotiatedGroup));
         byte[] ours = new byte[KeyingMaterialLength];
         connection.ExportKeyingMaterial("EXTRACTOR-dtls_srtp", ours);
         return Convert.ToHexString(ours);
