@@ -79,6 +79,33 @@ internal sealed partial class DtlsProtocol
         }
     }
 
+    // RFC 9147 section 7.1: a handshake flight that arrives out of order is acknowledged at once, and
+    // one that arrives in part is acknowledged a quarter of the retransmission timeout after its first
+    // record, so the peer resends only what is missing.
+    private void AcknowledgeDisruption()
+    {
+        if (State != ProtocolState.Handshaking)
+        {
+            _ = _reassembler.TakeOutOfOrder();
+            return;
+        }
+
+        if (_reassembler.TakeOutOfOrder())
+        {
+            LogOutOfOrderAcknowledged();
+            SendAck();
+        }
+
+        if (!_reassembler.HasPartial)
+        {
+            _ackAt = long.MaxValue;
+        }
+        else if (_ackAt == long.MaxValue)
+        {
+            _ackAt = _time.GetTimestamp() + (Ticks(_timeout) / 4);
+        }
+    }
+
     private void SendAck()
     {
         if (_handshakeRecords.Count == 0)

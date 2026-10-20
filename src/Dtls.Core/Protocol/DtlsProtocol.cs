@@ -75,6 +75,9 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
     private bool _flightTimed;
     private TimeSpan _timeout = settings.InitialRetransmissionTimeout;
     private long _retransmitAt = long.MaxValue;
+
+    // RFC 9147 section 7.1: when to acknowledge a flight that has arrived only in part.
+    private long _ackAt = long.MaxValue;
     private long _handshakeDeadline = long.MaxValue;
     private int _refusedRenegotiation = -1;
     private bool _closeNotifySent;
@@ -148,7 +151,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
     public long Deadline =>
         Math.Min(
             Math.Min(_flightTimed ? _retransmitAt : long.MaxValue, _handshakeDeadline),
-            _pathDeadline
+            Math.Min(_pathDeadline, _ackAt)
         );
 
     // Starts the handshake: a client sends its ClientHello; a server waits for one.
@@ -239,6 +242,13 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
         }
 
         ExpirePathValidation(now);
+        if (now >= _ackAt)
+        {
+            _ackAt = long.MaxValue;
+            LogPartialFlightAcknowledged();
+            Guard(SendAck);
+        }
+
         if (_flightTimed && now >= _retransmitAt)
         {
             // RFC 6347 §4.2.4.1: double the timer on each retransmission, up to 60 seconds.
@@ -610,6 +620,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
         if (used && encrypted && _version == DtlsProtocols.Dtls13)
         {
             HandshakeRecordReceived(epoch, recordSequence);
+            AcknowledgeDisruption();
         }
     }
 
@@ -753,6 +764,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
     {
         _reassembler.FlightAnswered();
         _handshakeRecords.Clear();
+        _ackAt = long.MaxValue;
         _flight = flight;
         _flightTimed = timed;
         _timeout = _settings.InitialRetransmissionTimeout;

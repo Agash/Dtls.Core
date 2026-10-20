@@ -144,4 +144,18 @@ internal sealed partial class DtlsProtocol
         "{Failed} records failed to authenticate under the peer's keys, of {Limit} allowed; asking it for new keys (RFC 9147 section 4.5.3)"
     )]
     private partial void LogIntegrityLimitNear(long failed, long limit);
+
+    [LoggerMessage(
+        26,
+        LogLevel.Debug,
+        "A handshake fragment arrived out of order; acknowledging what arrived (RFC 9147 section 7.1)"
+    )]
+    private partial void LogOutOfOrderAcknowledged();
+
+    [LoggerMessage(
+        27,
+        LogLevel.Debug,
+        "The peer's flight is still partial a quarter timeout on; acknowledging what arrived (RFC 9147 section 7.1)"
+    )]
+    private partial void LogPartialFlightAcknowledged();
 }

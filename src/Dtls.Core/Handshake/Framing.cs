@@ -108,6 +108,20 @@ internal sealed class HandshakeReassembler(int maximumMessage)
 
     public ushort Next { get; private set; }
 
+    // RFC 9147 section 7.1: whether a fragment arrived out of order since the last look, a later message
+    // or not the next piece of the current one.
+    private bool _outOfOrder;
+
+    public bool TakeOutOfOrder()
+    {
+        bool outOfOrder = _outOfOrder;
+        _outOfOrder = false;
+        return outOfOrder;
+    }
+
+    // Whether part of a flight is held: a message started but not complete, or a later one waiting.
+    public bool HasPartial => _partial.Count > 0;
+
     // Starts reading at a message_seq, as a server does from the ClientHello that carried its cookie.
     public void Restart(ushort next)
     {
@@ -176,6 +190,7 @@ internal sealed class HandshakeReassembler(int maximumMessage)
             _partial[fragment.MessageSeq] = partial;
         }
 
+        _outOfOrder |= fragment.MessageSeq != Next || fragment.Offset > partial.Contiguous;
         if (!partial.Fill(fragment.Offset, fragment.Body, keep: true))
         {
             // RFC 9147 §5.5: a retransmission may split a message differently but must not change it.
@@ -260,6 +275,9 @@ internal sealed class HandshakeReassembler(int maximumMessage)
 
         public bool IsComplete => _missing == 0;
 
+        // How far the message has arrived without a gap.
+        public int Contiguous => _have.AsSpan().IndexOf(false) is int gap and >= 0 ? gap : Length;
+
         public bool Matches(in HandshakeFragment fragment) =>
             fragment.Type == Type && fragment.Length == Length;
 
@@ -281,15 +299,8 @@ internal sealed class HandshakeReassembler(int maximumMessage)
                 bytes.CopyTo(body);
             }
 
-            for (int i = 0; i < have.Length; i++)
-            {
-                if (!have[i])
-                {
-                    have[i] = true;
-                    _missing--;
-                }
-            }
-
+            _missing -= have.Length - have.Count(true);
+            have.Fill(true);
             return true;
         }
 

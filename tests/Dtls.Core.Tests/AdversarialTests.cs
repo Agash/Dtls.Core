@@ -577,10 +577,36 @@ public sealed class AdversarialTests
         }
     }
 
+    // RFC 9147 section 7.1: a flight that arrives with a gap is acknowledged at once, so the peer resends
+    // only the missing records instead of waiting out its timer and resending the flight. Small datagrams
+    // spread the server's encrypted flight over several; the first of them is lost.
+    [TestMethod]
+    public async Task Dtls13_FlightWithAGap_IsAcknowledgedAtOnce()
+    {
+        Path path = new();
+        // A datagram that holds only DTLS 1.3 ciphertext: unified headers, 001xxxxx (RFC 9147 section 4).
+        path.ToClient.DropFirst(static datagram =>
+            datagram.Length > 0 && (datagram[0] & 0xE0) == 0x20
+        );
+
+        (DtlsConnection client, DtlsConnection server) = await ConnectAsync(
+            path,
+            DtlsProtocols.Dtls13,
+            maximumDatagram: 256
+        );
+        await using (client)
+        await using (server)
+        {
+            StringAssert.Contains(_log.ToString(), "arrived out of order");
+            await TalkAsync(client, server, rounds: 1);
+        }
+    }
+
     private async Task<(DtlsConnection Client, DtlsConnection Server)> ConnectAsync(
         Path path,
         DtlsProtocols version,
-        TimeSpan? handshakeTimeout = null
+        TimeSpan? handshakeTimeout = null,
+        int? maximumDatagram = null
     )
     {
         using X509Certificate2 clientCertificate = DtlsCertificates.CreateSelfSigned();
@@ -602,6 +628,8 @@ public sealed class AdversarialTests
         serverOptions.InitialRetransmissionTimeout = s_retransmission;
         clientOptions.HandshakeTimeout = handshakeTimeout ?? clientOptions.HandshakeTimeout;
         serverOptions.HandshakeTimeout = handshakeTimeout ?? serverOptions.HandshakeTimeout;
+        clientOptions.MaximumDatagramSize = maximumDatagram ?? clientOptions.MaximumDatagramSize;
+        serverOptions.MaximumDatagramSize = maximumDatagram ?? serverOptions.MaximumDatagramSize;
         Task<DtlsConnection> server = DtlsConnection
             .AcceptAsync(path.Pair.Server, serverOptions, TestContext.CancellationToken)
             .AsTask();
@@ -725,6 +753,7 @@ public sealed class AdversarialTests
         private static readonly Lock s_forging = new();
         private readonly Lock _lock = new();
         private int _drop;
+        private Func<byte[], bool>? _dropFirst;
         private bool _hold;
         private byte[]? _held;
 
@@ -735,6 +764,15 @@ public sealed class AdversarialTests
             lock (_lock)
             {
                 _drop = count;
+            }
+        }
+
+        // Drops the first datagram that matches, once.
+        public void DropFirst(Func<byte[], bool> match)
+        {
+            lock (_lock)
+            {
+                _dropFirst = match;
             }
         }
 
@@ -788,6 +826,12 @@ public sealed class AdversarialTests
                 if (_drop > 0)
                 {
                     _drop--;
+                    return false;
+                }
+
+                if (_dropFirst is { } match && match(datagram))
+                {
+                    _dropFirst = null;
                     return false;
                 }
 
