@@ -171,10 +171,16 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
     // Records dropped because they failed to parse, authenticate, or were replays.
     public long Dropped { get; private set; }
 
-    // DTLS 1.3 records that failed to authenticate under the keys of one epoch, most of any epoch. RFC
-    // 9147 §4.5.3 bounds this per key: past 2^36 forgeries an attacker's chance against AES-GCM and
-    // ChaCha20-Poly1305 is no longer negligible, and the connection must end.
-    public const long IntegrityLimit = 1L << 36;
+    // Records that may fail to authenticate under the keys of one epoch. RFC 9147 section 4.5.3 bounds
+    // this per key: past 2^36 forgeries an attacker's chance against AES-GCM and ChaCha20-Poly1305 is no
+    // longer negligible, and the connection must end. Lower only in tests.
+    public long IntegrityLimit { get; set; } = 1L << 36;
+
+    // Records protected under the current write keys.
+    public ulong WrittenUnderCurrentKeys => _write[^1].NextSequence;
+
+    // Records that failed to authenticate under the current read keys.
+    public long FailedUnderCurrentKeys => _read[^1].AuthenticationFailures;
 
     public bool IntegrityLimitReached { get; private set; }
 
@@ -290,6 +296,15 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
                 ? Write12Cid(state.Cipher, type, epoch, sequence, payload, record)
             : Write12(state.Cipher, type, epoch, sequence, payload, record);
         return sequence;
+    }
+
+    private void CountFailure(ReadState state)
+    {
+        AuthenticationFailures++;
+        if (++state.AuthenticationFailures >= IntegrityLimit)
+        {
+            IntegrityLimitReached = true;
+        }
     }
 
     // Ends the datagram being built.
@@ -598,7 +613,7 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
         int length = state.Cipher.Open(((ulong)epoch << 48) | sequence, type, fragment, out offset);
         if (length < 0)
         {
-            AuthenticationFailures++;
+            CountFailure(state);
             return -1;
         }
 
@@ -661,7 +676,7 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
         );
         if (opened < 0)
         {
-            AuthenticationFailures++;
+            CountFailure(state);
             Dropped++;
             return next;
         }
@@ -762,11 +777,7 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
 
         if (fresh && inner < 0)
         {
-            AuthenticationFailures++;
-            if (++state.AuthenticationFailures >= IntegrityLimit)
-            {
-                IntegrityLimitReached = true;
-            }
+            CountFailure(state);
         }
 
         if (typeAt < 0)

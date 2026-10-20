@@ -443,6 +443,16 @@ public sealed class DtlsConnection : IAsyncDisposable
         await FlushAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
+    // For tests: lowers the records one key may protect, and the records that may fail under one key.
+    internal void SetAeadLimitsForTest(ulong records, long failures)
+    {
+        lock (_lock)
+        {
+            _protocol.RecordLimitForTest = records;
+            _protocol.IntegrityLimitForTest = failures;
+        }
+    }
+
     // For tests: the current read and write epochs.
     internal (ushort Read, ushort Write) Epochs
     {

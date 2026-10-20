@@ -484,6 +484,99 @@ public sealed class AdversarialTests
         }
     }
 
+    // RFC 9147 section 4.5.3: ahead of its AEAD's record limit a DTLS 1.3 side moves to new keys, and
+    // traffic carries on across as many limits as it reaches.
+    [TestMethod]
+    public async Task RecordLimit_Dtls13_MovesToNewKeysAheadOfIt()
+    {
+        Path path = new();
+        (DtlsConnection client, DtlsConnection server) = await ConnectAsync(
+            path,
+            DtlsProtocols.Dtls13
+        );
+        await using (client)
+        await using (server)
+        {
+            client.SetAeadLimitsForTest(records: 64, failures: 1L << 36);
+            ushort start = client.Epochs.Write;
+
+            await TalkAsync(client, server, rounds: 200);
+
+            Assert.IsGreaterThanOrEqualTo(start + 3, (int)client.Epochs.Write);
+            Assert.IsFalse(client.IsFailed);
+            await EventuallyAsync(() => server.Epochs.Read == client.Epochs.Write);
+        }
+    }
+
+    // DTLS 1.2 cannot change keys, so it ends the connection at the limit rather than exceed it.
+    [TestMethod]
+    public async Task RecordLimit_Dtls12_EndsTheConnectionAtIt()
+    {
+        Path path = new();
+        (DtlsConnection client, DtlsConnection server) = await ConnectAsync(
+            path,
+            DtlsProtocols.Dtls12
+        );
+        await using (client)
+        await using (server)
+        {
+            client.SetAeadLimitsForTest(records: 12, failures: 1L << 36);
+
+            InvalidOperationException ended = await Assert.ThrowsAsync<InvalidOperationException>(
+                async () =>
+                {
+                    for (int i = 0; i < 20; i++)
+                    {
+                        await client.SendAsync(new byte[16], TestContext.CancellationToken);
+                    }
+                }
+            );
+
+            Assert.IsTrue(client.IsFailed, ended.Message);
+        }
+    }
+
+    // Section 4.5.3: before forgeries under the peer's keys reach the integrity limit, DTLS 1.3 asks the
+    // peer to update (update_requested), so the next forgeries count against fresh keys.
+    [TestMethod]
+    public async Task IntegrityLimit_Dtls13_AsksThePeerForNewKeys()
+    {
+        bool forging = false;
+        Path path = new(
+            forge: datagram =>
+                Volatile.Read(ref forging) && datagram.Length > 0 && (datagram[0] & 0xE0) == 0x20
+                    ? [Corrupted(datagram)]
+                    : [],
+            forgeFirst: true
+        );
+        (DtlsConnection client, DtlsConnection server) = await ConnectAsync(
+            path,
+            DtlsProtocols.Dtls13
+        );
+        await using (client)
+        await using (server)
+        {
+            server.SetAeadLimitsForTest(records: ulong.MaxValue, failures: 16);
+            ushort start = server.Epochs.Read;
+            Volatile.Write(ref forging, true);
+
+            await TalkAsync(client, server, rounds: 12);
+            Volatile.Write(ref forging, false);
+
+            await EventuallyAsync(() => server.Epochs.Read > start && client.Epochs.Write > start);
+            Assert.IsFalse(server.IsFailed);
+            await TalkAsync(client, server, rounds: 2);
+        }
+
+        // A forged copy with its authentication tag damaged.
+        static byte[] Corrupted(byte[] datagram)
+        {
+            byte[] copy = [.. datagram];
+            copy[^1] ^= 0x01;
+            return copy;
+        }
+    }
+
     private async Task<(DtlsConnection Client, DtlsConnection Server)> ConnectAsync(
         Path path,
         DtlsProtocols version,

@@ -31,6 +31,14 @@ internal readonly record struct CipherSuiteInfo(
 {
     public const int TagLength = 16;
 
+    // RFC 8446 section 5.5: AES-GCM protects at most 2^24.5 records under one key. ChaCha20-Poly1305's
+    // limit lies beyond the 48-bit record sequence number, which ends an epoch first.
+    private const ulong AesGcmRecordLimit = 23_726_566;
+
+    // The records one key may protect (RFC 9147 section 4.5.3).
+    public ulong ConfidentialityLimit =>
+        Aead == AeadKind.AesGcm ? AesGcmRecordLimit : ulong.MaxValue;
+
     // Offered or accepted when the options name none, most preferred first.
     public static ImmutableArray<TlsCipherSuite> Default { get; } =
     [

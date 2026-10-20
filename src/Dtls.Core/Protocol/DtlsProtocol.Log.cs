@@ -130,4 +130,18 @@ internal sealed partial class DtlsProtocol
         "Records came from a new address, but the peer takes no return routability check; it is not followed (RFC 9146 section 6)"
     )]
     internal partial void LogPeerNotFollowed();
+
+    [LoggerMessage(
+        24,
+        LogLevel.Information,
+        "The write keys protected {Written} of the {Limit} records their AEAD allows; moving to new keys (RFC 9147 section 4.5.3)"
+    )]
+    private partial void LogRecordLimitNear(ulong written, ulong limit);
+
+    [LoggerMessage(
+        25,
+        LogLevel.Warning,
+        "{Failed} records failed to authenticate under the peer's keys, of {Limit} allowed; asking it for new keys (RFC 9147 section 4.5.3)"
+    )]
+    private partial void LogIntegrityLimitNear(long failed, long limit);
 }

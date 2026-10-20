@@ -58,6 +58,9 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
     private CipherSuiteInfo _suite;
     private KeyShare? _keyShare;
 
+    // The read epoch whose failed records last asked the peer for new keys.
+    private ushort _integrityUpdateEpoch;
+
     // The group the key exchange ran on, once it has.
     internal NamedGroup NegotiatedGroup { get; private set; }
     private byte[]? _masterSecret;
@@ -179,6 +182,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
             RecordDispatcher dispatcher = new(this, applicationData);
             _records.Read(datagram, ref dispatcher);
             ReportDrops();
+            CheckIntegrityLimit();
             if (_records.IntegrityLimitReached)
             {
                 Fail(
@@ -274,9 +278,77 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
             );
         }
 
+        RefuseOverRecordLimit();
         _ = _records.Write(ContentType.ApplicationData, _records.WriteEpoch, data);
         _records.Flush();
         _applicationSent++;
+        UpdateKeysNearRecordLimit();
+    }
+
+    // For tests: the records one key may protect, in place of the suite's limit.
+    internal ulong? RecordLimitForTest { get; set; }
+
+    // For tests: the records that may fail under one key.
+    internal long IntegrityLimitForTest
+    {
+        set => _records.IntegrityLimit = value;
+    }
+
+    private ulong RecordLimit => RecordLimitForTest ?? _suite.ConfidentialityLimit;
+
+    // RFC 9147 section 4.5.3 and RFC 8446 section 5.5: a key protects at most its AEAD's limit of
+    // records. DTLS 1.3 moves to new keys an eighth of the limit early, so the KeyUpdate is acknowledged
+    // well before it.
+    private void UpdateKeysNearRecordLimit()
+    {
+        ulong limit = RecordLimit;
+        ulong written = _records.WrittenUnderCurrentKeys;
+        if (
+            _version == DtlsProtocols.Dtls13
+            && written >= limit - (limit / 8)
+            && _keyUpdate is null
+        )
+        {
+            LogRecordLimitNear(written, limit);
+            SendKeyUpdate(requestUpdate: false);
+        }
+    }
+
+    // At the limit nothing more is protected under the keys. DTLS 1.2 has no way to change them, and a
+    // DTLS 1.3 KeyUpdate still unacknowledged an eighth of the limit later means the peer is gone; either
+    // way the connection ends.
+    private void RefuseOverRecordLimit()
+    {
+        ulong written = _records.WrittenUnderCurrentKeys;
+        if (written < RecordLimit)
+        {
+            return;
+        }
+
+        DtlsException limit = new(
+            DtlsAlert.InternalError,
+            isRemote: false,
+            $"The keys protected {written} records, their AEAD's limit (RFC 9147 §4.5.3)."
+        );
+        Fail(limit, sendAlert: true);
+        throw new InvalidOperationException("The DTLS connection failed.", limit);
+    }
+
+    // RFC 9147 section 4.5.3: before the records failing under the peer's keys reach the limit, DTLS 1.3
+    // asks the peer to move to new ones, once for each read epoch.
+    private void CheckIntegrityLimit()
+    {
+        if (
+            _version == DtlsProtocols.Dtls13
+            && State == ProtocolState.Connected
+            && _records.FailedUnderCurrentKeys >= _records.IntegrityLimit / 2
+            && _integrityUpdateEpoch != _records.ReadEpoch
+        )
+        {
+            _integrityUpdateEpoch = _records.ReadEpoch;
+            LogIntegrityLimitNear(_records.FailedUnderCurrentKeys, _records.IntegrityLimit);
+            SendKeyUpdate(requestUpdate: true);
+        }
     }
 
     public bool TryDequeue(out OutgoingDatagram datagram)
