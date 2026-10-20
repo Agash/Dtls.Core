@@ -1,5 +1,6 @@
 using System.Runtime.Versioning;
 using System.Security.Cryptography.X509Certificates;
+using Dtls.Core.Handshake;
 
 namespace Dtls.Core.Tests;
 
@@ -109,6 +110,9 @@ public sealed class SchannelInteropTests
             TestContext.CancellationToken
         );
 
+        // This side chooses the group, and offered X25519 first (RFC 9325 section 4.2.1). As a server,
+        // Schannel chooses by its own order, which puts P-384 first for DTLS 1.2.
+        Assert.AreEqual(NamedGroup.X25519, connection.NegotiatedGroup);
         await AssertAgreesAsync(connection, schannel, own);
     }
 

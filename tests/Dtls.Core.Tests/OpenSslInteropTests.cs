@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.RegularExpressions;
+using Dtls.Core.Handshake;
 
 namespace Dtls.Core.Tests;
 
@@ -225,6 +226,8 @@ public sealed partial class OpenSslInteropTests
 
     private static string Export(DtlsConnection connection)
     {
+        // RFC 9325 section 4.2.1: both sides prefer X25519.
+        Assert.AreEqual(NamedGroup.X25519, connection.NegotiatedGroup);
         byte[] ours = new byte[KeyingMaterialLength];
         connection.ExportKeyingMaterial("EXTRACTOR-dtls_srtp", ours);
         return Convert.ToHexString(ours);

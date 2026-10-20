@@ -1,6 +1,7 @@
 using System.Net.Security;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
+using Dtls.Core.Handshake;
 
 namespace Dtls.Core.Tests;
 
@@ -34,6 +35,9 @@ public sealed class HandshakeTests
         await using (server)
         {
             Assert.AreEqual(client.NegotiatedCipherSuite, server.NegotiatedCipherSuite);
+            // RFC 9325 section 4.2.1: X25519 first.
+            Assert.AreEqual(NamedGroup.X25519, client.NegotiatedGroup);
+            Assert.AreEqual(NamedGroup.X25519, server.NegotiatedGroup);
             Assert.AreEqual(
                 SrtpProtectionProfile.AeadAes128Gcm,
                 client.SrtpKeyingMaterial!.Profile

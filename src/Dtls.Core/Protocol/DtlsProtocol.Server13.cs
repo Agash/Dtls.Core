@@ -278,6 +278,7 @@ internal sealed partial class DtlsProtocol
         SignatureScheme scheme = Signatures.Choose13(credential, _peerSignatureSchemes);
         _keyShare13 = KeyShare.Create(group);
         byte[] shared = _keyShare13.DeriveSecret(clientKey);
+        NegotiatedGroup = group;
         Extensions extensions = new Extensions()
             .Add(
                 ExtensionType.SupportedVersions,

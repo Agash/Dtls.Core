@@ -91,6 +91,9 @@ public sealed class DtlsConnection : IAsyncDisposable
     /// <summary>The cipher suite the handshake chose.</summary>
     public TlsCipherSuite NegotiatedCipherSuite => _protocol.NegotiatedCipherSuite;
 
+    // The group the key exchange ran on.
+    internal Handshake.NamedGroup NegotiatedGroup => _protocol.NegotiatedGroup;
+
     /// <summary>The application protocol ALPN chose; default when none was negotiated.</summary>
     public SslApplicationProtocol NegotiatedApplicationProtocol =>
         _protocol.NegotiatedApplicationProtocol;

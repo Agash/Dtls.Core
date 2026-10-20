@@ -367,6 +367,7 @@ internal sealed partial class DtlsProtocol
 
         _keyShare = KeyShare.Create(exchange.Group);
         _premasterSecret = _keyShare.DeriveSecret(exchange.PublicKey);
+        NegotiatedGroup = exchange.Group;
     }
 
     // Flight 5: the client's certificate when asked for, its key share, the proof it holds the

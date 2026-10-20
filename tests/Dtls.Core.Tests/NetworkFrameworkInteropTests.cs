@@ -1,6 +1,7 @@
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.RegularExpressions;
+using Dtls.Core.Handshake;
 
 namespace Dtls.Core.Tests;
 
@@ -77,6 +78,7 @@ public sealed partial class NetworkFrameworkInteropTests
     )
     {
         string cipher = await peer.WaitForAsync(Cipher(), TestContext.CancellationToken);
+        Assert.AreEqual(NamedGroup.X25519, connection.NegotiatedGroup, "RFC 9325 section 4.2.1");
         Assert.AreEqual(
             (int)connection.NegotiatedCipherSuite,
             int.Parse(cipher, System.Globalization.CultureInfo.InvariantCulture)

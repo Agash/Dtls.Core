@@ -57,6 +57,9 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
     private byte[]? _peerRandom;
     private CipherSuiteInfo _suite;
     private KeyShare? _keyShare;
+
+    // The group the key exchange ran on, once it has.
+    internal NamedGroup NegotiatedGroup { get; private set; }
     private byte[]? _masterSecret;
     private ushort _sendSequence;
     private X509Certificate2? _remoteCertificate;

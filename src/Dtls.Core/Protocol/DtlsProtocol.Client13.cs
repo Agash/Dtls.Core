@@ -97,6 +97,7 @@ internal sealed partial class DtlsProtocol
         AcceptReturnRoutability(hello.Extensions);
         _transcript13!.Add13(message.Type, message.Body);
         byte[] shared = _keyShare13.DeriveSecret(key);
+        NegotiatedGroup = _keyShare13.Group;
         DeriveHandshakeSecrets(shared);
         System.Security.Cryptography.CryptographicOperations.ZeroMemory(shared);
         _step = Step.EncryptedExtensions;
