@@ -1,7 +1,6 @@
 using System.Runtime.Versioning;
 using System.Security.Cryptography.X509Certificates;
 using Dtls.Core.Crypto;
-using Dtls.Core.Handshake;
 
 namespace Dtls.Core.Tests;
 
