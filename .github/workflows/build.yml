@@ -71,7 +71,7 @@ jobs:
           git clone --depth 1 --branch v5.9.4-stable https://github.com/wolfSSL/wolfssl.git "$RUNNER_TEMP/wolfssl"
           cd "$RUNNER_TEMP/wolfssl"
           ./autogen.sh
-          ./configure --enable-dtls --enable-dtls13 --enable-srtp --enable-dtls-frag-ch --enable-keying-material --enable-opensslextra --enable-dtlscid
+          ./configure --enable-dtls --enable-dtls13 --enable-srtp --enable-dtls-frag-ch --enable-keying-material --enable-curve25519 --enable-opensslextra --enable-dtlscid
           make -j"$(nproc)"
           echo "DTLS_WOLFSSL_EXAMPLES=$RUNNER_TEMP/wolfssl/examples" >> "$GITHUB_ENV"
 
