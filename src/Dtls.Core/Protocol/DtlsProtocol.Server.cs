@@ -75,9 +75,27 @@ internal sealed partial class DtlsProtocol
         }
 
         // A DTLS 1.3 handshake exchanges its cookie in a HelloRetryRequest instead (RFC 9147 §5.1).
+        // Until a ClientHello brings a cookie back the server keeps nothing, so one it refuses then is
+        // dropped like an unreadable datagram (RFC 9147 §4.5.2): it may be a forgery of the address.
         if (Offers13(hello))
         {
-            ServerReceive(message);
+            if (!_settings.CookieExchange || hello.Extensions.TryGet(ExtensionType.Cookie, out _))
+            {
+                ServerReceive(message);
+                return;
+            }
+
+            try
+            {
+                ServerReceive(message);
+            }
+            catch (DtlsException error)
+            {
+                // Deliberately not fatal, as for a malformed ClientHello above.
+                LogClientHelloDropped(error.Message);
+                _reassembler.Restart(message.MessageSeq);
+            }
+
             return;
         }
 
@@ -177,6 +195,7 @@ internal sealed partial class DtlsProtocol
                 _premasterSecret = _keyShare!.DeriveSecret(
                     ClientKeyExchange.Decode(message.Body).PublicKey
                 );
+                NegotiatedGroup = _group;
                 DeriveKeys();
                 if (_remoteCertificate is not null)
                 {
