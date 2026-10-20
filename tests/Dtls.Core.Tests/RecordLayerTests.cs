@@ -87,6 +87,11 @@ public sealed class RecordLayerTests
     )
     {
         Assert.IsTrue(CipherSuiteInfo.TryGet(suite, out CipherSuiteInfo info));
+        if (!info.IsSupported)
+        {
+            Assert.Inconclusive($"{suite} is not supported on this platform.");
+        }
+
         (RecordLayer sender, RecordLayer receiver) = Pair(info);
         using (sender)
         using (receiver)
@@ -105,6 +110,11 @@ public sealed class RecordLayerTests
                 out CipherSuiteInfo info
             )
         );
+        if (!info.IsSupported)
+        {
+            Assert.Inconclusive("AES-CCM is not supported on this platform.");
+        }
+
         (RecordLayer sender, RecordLayer receiver) = Pair(info);
         using (sender)
         using (receiver)

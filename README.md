@@ -160,7 +160,7 @@ does not finish within `HandshakeTimeout` throws `TimeoutException`. Once connec
 | --- | --- |
 | Versions | DTLS 1.2, DTLS 1.3 |
 | DTLS 1.3 cipher suites | `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256`, `TLS_AES_128_CCM_SHA256` (`TLS_AES_128_CCM_8_SHA256` is left out: RFC 9147 section 4.5.3 forbids it without extra forgery safeguards) |
-| DTLS 1.2 cipher suites | `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`, `..._AES_256_GCM_SHA384`, `..._CHACHA20_POLY1305_SHA256`, and the `ECDHE_RSA` equivalents; `TLS_ECDHE_ECDSA_WITH_AES_128_CCM` and `..._AES_256_CCM` (RFC 7251); `..._AES_128_CCM_8` and `..._AES_256_CCM_8` when named in `CipherSuites`, for CoAP (RFC 7252), with RFC 9147's limit of 128 failed records per key |
+| DTLS 1.2 cipher suites | `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`, `..._AES_256_GCM_SHA384`, `..._CHACHA20_POLY1305_SHA256`, and the `ECDHE_RSA` equivalents; `TLS_ECDHE_ECDSA_WITH_AES_128_CCM` and `..._AES_256_CCM` (RFC 7251); `..._AES_128_CCM_8` and `..._AES_256_CCM_8` when named in `CipherSuites`, for CoAP (RFC 7252), with RFC 9147's limit of 128 failed records per key. AES-CCM runs where .NET provides `AesCcm`: Windows and Linux, not macOS |
 | Groups | P-256, P-384 |
 | Signatures | ECDSA with SHA-256 and SHA-384, RSA-PSS, RSA PKCS #1 (DTLS 1.2) |
 | DTLS 1.3 | HelloRetryRequest with cookie, ACKs, KeyUpdate, record number encryption, NewConnectionId and RequestConnectionId |

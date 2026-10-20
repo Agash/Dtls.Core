@@ -55,6 +55,11 @@ public sealed partial class OpenSslInteropTests
         bool smallDatagrams
     )
     {
+        if (cipher.Contains("CCM", StringComparison.Ordinal) && !AesCcm.IsSupported)
+        {
+            Assert.Inconclusive("AES-CCM is not supported on this platform.");
+        }
+
         using X509Certificate2 own = DtlsCertificates.CreateSelfSigned(keyType);
         using X509Certificate2 peer = DtlsCertificates.CreateSelfSigned(keyType);
         using TempPem pem = new(peer);

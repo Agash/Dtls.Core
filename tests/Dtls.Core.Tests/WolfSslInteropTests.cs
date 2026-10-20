@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Security;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -39,6 +40,11 @@ public sealed partial class WolfSslInteropTests
         TlsCipherSuite expected
     )
     {
+        if (!AesCcm.IsSupported)
+        {
+            Assert.Inconclusive("AES-CCM is not supported on this platform.");
+        }
+
         using X509Certificate2 own = DtlsCertificates.CreateSelfSigned(DtlsKeyType.EcdsaP256);
         using X509Certificate2 peer = DtlsCertificates.CreateSelfSigned(DtlsKeyType.EcdsaP256);
         using OpenSslInteropTests.TempPem ownPem = new(own);
