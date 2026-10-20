@@ -222,7 +222,19 @@ internal sealed partial class DtlsProtocol
 
         if (PostHandshakeBusy)
         {
-            _postHandshakeWaiting.Enqueue(() => SendKeyUpdate(requestUpdate));
+            // Post-handshake flights go one at a time here, so the update waits for the flight that is
+            // out. One update waits however often it is asked for: RFC 9147 section 5.8.4 allows no
+            // second KeyUpdate before the first is acknowledged.
+            if (!_keyUpdateQueued)
+            {
+                _keyUpdateQueued = true;
+                _postHandshakeWaiting.Enqueue(() =>
+                {
+                    _keyUpdateQueued = false;
+                    SendKeyUpdate(requestUpdate);
+                });
+            }
+
             return;
         }
 

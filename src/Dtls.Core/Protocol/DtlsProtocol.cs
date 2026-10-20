@@ -320,7 +320,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
         if (
             _version == DtlsProtocols.Dtls13
             && written >= limit - (limit / 8)
-            && _keyUpdate is null
+            && !KeyUpdateUnderway
         )
         {
             LogRecordLimitNear(written, limit);
@@ -339,7 +339,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
             return true;
         }
 
-        if (_version == DtlsProtocols.Dtls13 && _keyUpdate is not null)
+        if (_version == DtlsProtocols.Dtls13 && KeyUpdateUnderway)
         {
             _recordsHeldBack++;
             LogRecordHeldBack(written);
@@ -357,6 +357,13 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
 
     // Records not sent because the keys were at their limit while new ones were on the way.
     private long _recordsHeldBack;
+
+    // A KeyUpdate waits behind a flight that is out: the client's last handshake flight before the
+    // server acknowledges it, or a connection ID flight (RFC 9147 section 8 allows one at a time).
+    private bool _keyUpdateQueued;
+
+    // New write keys are on the way: a KeyUpdate is out, or waits to go.
+    private bool KeyUpdateUnderway => _keyUpdate is not null || _keyUpdateQueued;
 
     // RFC 9147 section 4.5.3: before the records failing under the peer's keys reach the limit, DTLS 1.3
     // asks the peer to move to new ones, once for each read epoch.

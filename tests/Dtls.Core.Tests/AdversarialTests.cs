@@ -535,6 +535,33 @@ public sealed class AdversarialTests
         }
     }
 
+    // RFC 9147 section 8: a KeyUpdate waits while the client's last handshake flight is unacknowledged.
+    // Records reaching the limit then are held back like those behind an update in flight, and one update
+    // waits, however many records reach it. The server's epoch-3 datagrams (its ACK of that flight,
+    // section 7.1) never arrive, so the flight stays out.
+    [TestMethod]
+    public async Task RecordLimit_Dtls13_WithTheHandshakeUnacknowledged_HoldsRecordsBack()
+    {
+        Path path = new();
+        path.ToClient.DropAll(static d => d.Length > 0 && (d[0] & 0xE3) == 0x23);
+        (DtlsConnection client, DtlsConnection server) = await ConnectAsync(
+            path,
+            DtlsProtocols.Dtls13
+        );
+        await using (client)
+        await using (server)
+        {
+            client.SetAeadLimitsForTest(records: 16, failures: 1L << 36);
+            for (int i = 0; i < 30; i++)
+            {
+                await client.SendAsync(new byte[16], TestContext.CancellationToken);
+            }
+
+            Assert.IsFalse(client.IsFailed);
+            Assert.AreEqual(14, client.Statistics.ApplicationRecordsHeldBack);
+        }
+    }
+
     // Sends records one way and reads what arrives until a quiet spell; returns how many arrived.
     private async Task<int> SendOneWayAsync(DtlsConnection from, DtlsConnection to, int records)
     {
@@ -808,6 +835,7 @@ public sealed class AdversarialTests
         private readonly Lock _lock = new();
         private int _drop;
         private Func<byte[], bool>? _dropFirst;
+        private Func<byte[], bool>? _dropAll;
         private bool _hold;
         private byte[]? _held;
 
@@ -827,6 +855,15 @@ public sealed class AdversarialTests
             lock (_lock)
             {
                 _dropFirst = match;
+            }
+        }
+
+        // Drops every datagram that matches, from now on.
+        public void DropAll(Func<byte[], bool> match)
+        {
+            lock (_lock)
+            {
+                _dropAll = match;
             }
         }
 
@@ -886,6 +923,11 @@ public sealed class AdversarialTests
                 if (_dropFirst is { } match && match(datagram))
                 {
                     _dropFirst = null;
+                    return false;
+                }
+
+                if (_dropAll is { } always && always(datagram))
+                {
                     return false;
                 }
 
