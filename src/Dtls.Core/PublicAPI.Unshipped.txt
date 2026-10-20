@@ -94,6 +94,8 @@ Dtls.Core.DtlsConnectionOptions.TimeProvider.set -> void
 Dtls.Core.DtlsConnectionStatistics
 Dtls.Core.DtlsConnectionStatistics.ApplicationRecordsDropped.get -> long
 Dtls.Core.DtlsConnectionStatistics.ApplicationRecordsDropped.init -> void
+Dtls.Core.DtlsConnectionStatistics.ApplicationRecordsHeldBack.get -> long
+Dtls.Core.DtlsConnectionStatistics.ApplicationRecordsHeldBack.init -> void
 Dtls.Core.DtlsConnectionStatistics.ApplicationRecordsReceived.get -> long
 Dtls.Core.DtlsConnectionStatistics.ApplicationRecordsReceived.init -> void
 Dtls.Core.DtlsConnectionStatistics.ApplicationRecordsSent.get -> long

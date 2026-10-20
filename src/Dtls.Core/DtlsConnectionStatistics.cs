@@ -25,4 +25,11 @@ public readonly record struct DtlsConnectionStatistics(
     long ApplicationRecordsReceived,
     long ApplicationRecordsDropped,
     TimeSpan? HandshakeDuration
-);
+)
+{
+    /// <summary>
+    /// Application records not sent because the write keys were at their AEAD's limit while a DTLS 1.3
+    /// KeyUpdate waited for its acknowledgement (RFC 9147 section 4.5.3).
+    /// </summary>
+    public long ApplicationRecordsHeldBack { get; init; }
+}

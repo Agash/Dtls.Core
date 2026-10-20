@@ -500,12 +500,66 @@ public sealed class AdversarialTests
             client.SetAeadLimitsForTest(records: 64, failures: 1L << 36);
             ushort start = client.Epochs.Write;
 
-            await TalkAsync(client, server, rounds: 200);
+            int received = await SendOneWayAsync(client, server, records: 200);
 
             Assert.IsGreaterThanOrEqualTo(start + 3, (int)client.Epochs.Write);
             Assert.IsFalse(client.IsFailed);
+            Assert.AreEqual(200, received + client.Statistics.ApplicationRecordsHeldBack);
             await EventuallyAsync(() => server.Epochs.Read == client.Epochs.Write);
         }
+    }
+
+    // Section 4.5.3 and section 8: at the limit, with the KeyUpdate not acknowledged (here its ACK never
+    // comes), records are held back until the new keys can go in; the connection stays up.
+    [TestMethod]
+    public async Task RecordLimit_Dtls13_HoldsRecordsBackUntilTheUpdateIsAcknowledged()
+    {
+        Path path = new();
+        (DtlsConnection client, DtlsConnection server) = await ConnectAsync(
+            path,
+            DtlsProtocols.Dtls13
+        );
+        await using (client)
+        await using (server)
+        {
+            client.SetAeadLimitsForTest(records: 16, failures: 1L << 36);
+            path.ToClient.DropNext(int.MaxValue);
+
+            for (int i = 0; i < 30; i++)
+            {
+                await client.SendAsync(new byte[16], TestContext.CancellationToken);
+            }
+
+            Assert.IsFalse(client.IsFailed);
+            Assert.IsGreaterThanOrEqualTo(14, client.Statistics.ApplicationRecordsHeldBack);
+        }
+    }
+
+    // Sends records one way and reads what arrives until a quiet spell; returns how many arrived.
+    private async Task<int> SendOneWayAsync(DtlsConnection from, DtlsConnection to, int records)
+    {
+        byte[] buffer = new byte[4096];
+        int received = 0;
+        for (int i = 0; i < records; i++)
+        {
+            await from.SendAsync(RandomBytes(Random.Shared, 200), TestContext.CancellationToken);
+            using CancellationTokenSource quiet = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.CancellationToken
+            );
+            quiet.CancelAfter(TimeSpan.FromMilliseconds(200));
+            try
+            {
+                _ = await to.ReceiveAsync(buffer, quiet.Token);
+                received++;
+            }
+            catch (OperationCanceledException)
+                when (!TestContext.CancellationToken.IsCancellationRequested)
+            {
+                // Deliberately not logged: a held-back record never arrives.
+            }
+        }
+
+        return received;
     }
 
     // DTLS 1.2 cannot change keys, so it ends the connection at the limit rather than exceed it.

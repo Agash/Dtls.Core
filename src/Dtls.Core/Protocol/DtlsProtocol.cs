@@ -288,7 +288,11 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
             );
         }
 
-        RefuseOverRecordLimit();
+        if (!WithinRecordLimit())
+        {
+            return;
+        }
+
         _ = _records.Write(ContentType.ApplicationData, _records.WriteEpoch, data);
         _records.Flush();
         _applicationSent++;
@@ -324,15 +328,22 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
         }
     }
 
-    // At the limit nothing more is protected under the keys. DTLS 1.2 has no way to change them, and a
-    // DTLS 1.3 KeyUpdate still unacknowledged an eighth of the limit later means the peer is gone; either
-    // way the connection ends.
-    private void RefuseOverRecordLimit()
+    // At the limit nothing more is protected under the keys. DTLS 1.3 holds records back until its
+    // KeyUpdate is acknowledged and the new keys are in (RFC 9147 section 8); like a datagram the network
+    // loses, a held-back record is not sent. DTLS 1.2 has no way to change keys and ends the connection.
+    private bool WithinRecordLimit()
     {
         ulong written = _records.WrittenUnderCurrentKeys;
         if (written < RecordLimit)
         {
-            return;
+            return true;
+        }
+
+        if (_version == DtlsProtocols.Dtls13 && _keyUpdate is not null)
+        {
+            _recordsHeldBack++;
+            LogRecordHeldBack(written);
+            return false;
         }
 
         DtlsException limit = new(
@@ -343,6 +354,9 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
         Fail(limit, sendAlert: true);
         throw new InvalidOperationException("The DTLS connection failed.", limit);
     }
+
+    // Records not sent because the keys were at their limit while new ones were on the way.
+    private long _recordsHeldBack;
 
     // RFC 9147 section 4.5.3: before the records failing under the peer's keys reach the limit, DTLS 1.3
     // asks the peer to move to new ones, once for each read epoch.
@@ -383,7 +397,10 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
             _applicationReceived,
             ApplicationRecordsDropped: 0,
             _handshakeDuration
-        );
+        )
+        {
+            ApplicationRecordsHeldBack = _recordsHeldBack,
+        };
 
     // The path MTU changed, as when ICE moves to another candidate pair.
     public int MaximumDatagramSize => _records.MaximumDatagram;

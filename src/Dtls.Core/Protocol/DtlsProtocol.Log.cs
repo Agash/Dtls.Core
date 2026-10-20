@@ -158,4 +158,11 @@ internal sealed partial class DtlsProtocol
         "The peer's flight is still partial a quarter timeout on; acknowledging what arrived (RFC 9147 section 7.1)"
     )]
     private partial void LogPartialFlightAcknowledged();
+
+    [LoggerMessage(
+        28,
+        LogLevel.Warning,
+        "The write keys are at their AEAD's limit after {Written} records and the KeyUpdate is not yet acknowledged; the record is held back (RFC 9147 section 4.5.3)"
+    )]
+    private partial void LogRecordHeldBack(ulong written);
 }
