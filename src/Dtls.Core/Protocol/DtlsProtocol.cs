@@ -305,7 +305,7 @@ internal sealed partial class DtlsProtocol(ProtocolSettings settings, object own
     // For tests: the records that may fail under one key.
     internal long IntegrityLimitForTest
     {
-        set => _records.IntegrityLimit = value;
+        set => _records.IntegrityLimitOverride = value;
     }
 
     private ulong RecordLimit => RecordLimitForTest ?? _suite.ConfidentialityLimit;

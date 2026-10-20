@@ -11,9 +11,8 @@ namespace Dtls.Core.Records;
 // The record number on the wire is masked with a key of its own (RFC 9147 §4.2.3).
 internal sealed class RecordCipher13 : IDisposable
 {
-    public const int TagLength = CipherSuiteInfo.TagLength;
-
     private readonly AesGcm? _aes;
+    private readonly AesCcm? _ccm;
     private readonly ChaCha20Poly1305? _chacha;
     private readonly Aes? _sequenceAes;
     private readonly byte[]? _sequenceChaChaKey;
@@ -22,9 +21,20 @@ internal sealed class RecordCipher13 : IDisposable
     public RecordCipher13(CipherSuiteInfo suite, TrafficKeys keys)
     {
         _iv = [.. keys.Iv];
-        if (suite.Aead == AeadKind.AesGcm)
+        TagLength = suite.TagLength;
+        IntegrityLimit = suite.IntegrityLimit;
+        if (suite.Aead is AeadKind.AesGcm or AeadKind.AesCcm)
         {
-            _aes = new AesGcm(keys.Key, TagLength);
+            if (suite.Aead == AeadKind.AesGcm)
+            {
+                _aes = new AesGcm(keys.Key, TagLength);
+            }
+            else
+            {
+                _ccm = new AesCcm(keys.Key);
+            }
+
+            // RFC 9147 section 4.2.3: the AES-based suites mask record numbers with AES-ECB.
             _sequenceAes = Aes.Create();
             _sequenceAes.Key = keys.SequenceKey;
         }
@@ -34,6 +44,12 @@ internal sealed class RecordCipher13 : IDisposable
             _sequenceChaChaKey = [.. keys.SequenceKey];
         }
     }
+
+    // The length of the tag that follows each ciphertext.
+    public int TagLength { get; }
+
+    // The records that may fail to authenticate under these keys (RFC 9147 section 4.5.3).
+    public long IntegrityLimit { get; }
 
     // Encrypts content || type in place; the tag follows. Returns the ciphertext's length.
     public int Seal(ulong sequence, ReadOnlySpan<byte> header, Span<byte> inner, int innerLength)
@@ -45,6 +61,10 @@ internal sealed class RecordCipher13 : IDisposable
         if (_aes is not null)
         {
             _aes.Encrypt(nonce, text, text, tag, header);
+        }
+        else if (_ccm is not null)
+        {
+            _ccm.Encrypt(nonce, text, text, tag, header);
         }
         else
         {
@@ -72,6 +92,10 @@ internal sealed class RecordCipher13 : IDisposable
             if (_aes is not null)
             {
                 _aes.Decrypt(nonce, text, ciphertext[length..], text, header);
+            }
+            else if (_ccm is not null)
+            {
+                _ccm.Decrypt(nonce, text, ciphertext[length..], text, header);
             }
             else
             {
@@ -112,6 +136,7 @@ internal sealed class RecordCipher13 : IDisposable
     public void Dispose()
     {
         _aes?.Dispose();
+        _ccm?.Dispose();
         _chacha?.Dispose();
         _sequenceAes?.Dispose();
         CryptographicOperations.ZeroMemory(_iv);

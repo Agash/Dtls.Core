@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -24,6 +25,68 @@ public sealed partial class WolfSslInteropTests
     private const string WolfSslCid = "wolfcid1";
 
     public TestContext TestContext { get; set; } = null!;
+
+    // AES-CCM against a peer that implements it: RFC 7251's suites in DTLS 1.2, and TLS_AES_128_CCM_SHA256
+    // in DTLS 1.3 with its record numbers masked by AES-ECB (RFC 9147 section 4.2.3). Needs a wolfSSL
+    // built with --enable-aesccm.
+    [TestMethod]
+    [DataRow("4", "TLS13-AES128-CCM-SHA256", TlsCipherSuite.TLS_AES_128_CCM_SHA256)]
+    [DataRow("3", "ECDHE-ECDSA-AES128-CCM", TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CCM)]
+    [DataRow("3", "ECDHE-ECDSA-AES128-CCM-8", TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8)]
+    public async Task Connect_ToWolfSslServer_WithAesCcm(
+        string version,
+        string cipher,
+        TlsCipherSuite expected
+    )
+    {
+        using X509Certificate2 own = DtlsCertificates.CreateSelfSigned(DtlsKeyType.EcdsaP256);
+        using X509Certificate2 peer = DtlsCertificates.CreateSelfSigned(DtlsKeyType.EcdsaP256);
+        using OpenSslInteropTests.TempPem ownPem = new(own);
+        using OpenSslInteropTests.TempPem peerPem = new(peer);
+        int port = OpenSslInteropTests.FreePort();
+        using PeerProcess server = Start(
+            "server",
+            $"-u -v {version} -l {cipher} -p {port} -c {peerPem.Certificate} -k {peerPem.Key} -A {ownPem.Certificate} --srtp SRTP_AES128_CM_SHA1_80"
+        );
+        try
+        {
+            using UdpDatagramTransport transport = UdpDatagramTransport.Connect(
+                new IPEndPoint(IPAddress.Loopback, port)
+            );
+            DtlsClientConnectionOptions options = HandshakeTests.Client(own, peer);
+            options.SrtpProtectionProfiles = [SrtpProtectionProfile.Aes128CmHmacSha180];
+            options.EnabledProtocols = Both;
+            options.CipherSuites = [expected];
+            await using DtlsConnection connection = await DtlsConnection
+                .ConnectAsync(transport, options, TestContext.CancellationToken)
+                .AsTask()
+                .WaitAsync(s_timeout, TestContext.CancellationToken);
+
+            Assert.AreEqual(expected, connection.NegotiatedCipherSuite);
+            Assert.AreEqual(
+                await server.WaitForAsync(KeyingMaterial(), TestContext.CancellationToken),
+                Export(connection)
+            );
+            await connection.SendAsync(
+                Encoding.ASCII.GetBytes("hello wolfssl!"),
+                TestContext.CancellationToken
+            );
+            byte[] buffer = new byte[2048];
+            int length = await connection
+                .ReceiveAsync(buffer, TestContext.CancellationToken)
+                .AsTask()
+                .WaitAsync(s_timeout, TestContext.CancellationToken);
+            StringAssert.StartsWith(
+                Encoding.ASCII.GetString(buffer, 0, length),
+                "I hear you fa shizzle!"
+            );
+        }
+        catch (Exception error)
+            when (error is not AssertFailedException and not AssertInconclusiveException)
+        {
+            Assert.Fail($"{error}\nwolfSSL:\n{server.Output}");
+        }
+    }
 
     [TestMethod]
     // wolfSSL's -v: 4 is DTLS 1.3 only, 3 is DTLS 1.2 only, d accepts either and prefers 1.3.

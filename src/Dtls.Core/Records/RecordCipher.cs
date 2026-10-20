@@ -21,6 +21,9 @@ internal abstract class RecordCipher : IDisposable
     // plaintext written there can be sealed in place.
     public abstract int PlaintextOffset { get; }
 
+    // The records that may fail to authenticate under these keys (RFC 9147 section 4.5.3).
+    public long IntegrityLimit { get; private init; }
+
     public static RecordCipher Create(
         CipherSuiteInfo suite,
         ReadOnlySpan<byte> key,
@@ -28,8 +31,11 @@ internal abstract class RecordCipher : IDisposable
     ) =>
         suite.Aead switch
         {
-            AeadKind.AesGcm => new AesGcmCipher(key, iv),
-            _ => new ChaChaCipher(key, iv),
+            AeadKind.ChaCha20Poly1305 => new ChaChaCipher(key, iv)
+            {
+                IntegrityLimit = suite.IntegrityLimit,
+            },
+            _ => new SaltedCipher(suite, key, iv) { IntegrityLimit = suite.IntegrityLimit },
         };
 
     // Writes the protected fragment for the plaintext; returns its length.
@@ -86,16 +92,32 @@ internal abstract class RecordCipher : IDisposable
         BinaryPrimitives.WriteUInt16BigEndian(destination[11..], (ushort)plaintextLength);
     }
 
-    // RFC 5288: nonce = salt (4) || explicit nonce (8). The explicit nonce is the record's epoch and
-    // sequence number, which never repeats under one key, and travels in front of the ciphertext.
-    private sealed class AesGcmCipher(ReadOnlySpan<byte> key, ReadOnlySpan<byte> salt)
-        : RecordCipher
+    // AES-GCM (RFC 5288) and AES-CCM (RFC 6655): nonce = salt (4) || explicit nonce (8). The explicit
+    // nonce is the record's epoch and sequence number, which never repeats under one key, and travels in
+    // front of the ciphertext.
+    private sealed class SaltedCipher : RecordCipher
     {
         private const int ExplicitNonceLength = 8;
-        private readonly AesGcm _aes = new(key, CipherSuiteInfo.TagLength);
-        private readonly uint _salt = BinaryPrimitives.ReadUInt32BigEndian(salt);
+        private readonly AesGcm? _gcm;
+        private readonly AesCcm? _ccm;
+        private readonly int _tagLength;
+        private readonly uint _salt;
 
-        public override int Overhead => ExplicitNonceLength + CipherSuiteInfo.TagLength;
+        public SaltedCipher(CipherSuiteInfo suite, ReadOnlySpan<byte> key, ReadOnlySpan<byte> salt)
+        {
+            _tagLength = suite.TagLength;
+            _salt = BinaryPrimitives.ReadUInt32BigEndian(salt);
+            if (suite.Aead == AeadKind.AesCcm)
+            {
+                _ccm = new AesCcm(key);
+            }
+            else
+            {
+                _gcm = new AesGcm(key, _tagLength);
+            }
+        }
+
+        public override int Overhead => ExplicitNonceLength + _tagLength;
 
         public override int PlaintextOffset => ExplicitNonceLength;
 
@@ -110,13 +132,17 @@ internal abstract class RecordCipher : IDisposable
             BinaryPrimitives.WriteUInt32BigEndian(nonce, _salt);
             BinaryPrimitives.WriteUInt64BigEndian(nonce[4..], epochAndSequence);
             nonce[4..].CopyTo(fragment);
-            _aes.Encrypt(
-                nonce,
-                plaintext,
-                fragment.Slice(ExplicitNonceLength, plaintext.Length),
-                fragment.Slice(ExplicitNonceLength + plaintext.Length, CipherSuiteInfo.TagLength),
-                additional
-            );
+            Span<byte> ciphertext = fragment.Slice(ExplicitNonceLength, plaintext.Length);
+            Span<byte> tag = fragment.Slice(ExplicitNonceLength + plaintext.Length, _tagLength);
+            if (_gcm is not null)
+            {
+                _gcm.Encrypt(nonce, plaintext, ciphertext, tag, additional);
+            }
+            else
+            {
+                _ccm!.Encrypt(nonce, plaintext, ciphertext, tag, additional);
+            }
+
             return plaintext.Length + Overhead;
         }
 
@@ -138,16 +164,19 @@ internal abstract class RecordCipher : IDisposable
             BinaryPrimitives.WriteUInt32BigEndian(nonce, _salt);
             fragment[..ExplicitNonceLength].CopyTo(nonce[4..]);
             Span<byte> body = fragment.Slice(ExplicitNonceLength, length);
+            Span<byte> tag = fragment.Slice(ExplicitNonceLength + length, _tagLength);
             try
             {
-                // In place: the ciphertext and plaintext are the same span, which AES-GCM allows.
-                _aes.Decrypt(
-                    nonce,
-                    body,
-                    fragment.Slice(ExplicitNonceLength + length, CipherSuiteInfo.TagLength),
-                    body,
-                    additional
-                );
+                // In place: the ciphertext and plaintext are the same span, which both AEADs allow.
+                if (_gcm is not null)
+                {
+                    _gcm.Decrypt(nonce, body, tag, body, additional);
+                }
+                else
+                {
+                    _ccm!.Decrypt(nonce, body, tag, body, additional);
+                }
+
                 return length;
             }
             catch (AuthenticationTagMismatchException)
@@ -158,18 +187,24 @@ internal abstract class RecordCipher : IDisposable
             }
         }
 
-        public override void Dispose() => _aes.Dispose();
+        public override void Dispose()
+        {
+            _gcm?.Dispose();
+            _ccm?.Dispose();
+        }
     }
 
     // RFC 7905: nonce = IV xor the 64-bit epoch-and-sequence number, left-padded to 12 bytes; the
     // record carries no nonce.
     private sealed class ChaChaCipher(ReadOnlySpan<byte> key, ReadOnlySpan<byte> iv) : RecordCipher
     {
+        private const int TagLength = 16;
+
         private readonly ChaCha20Poly1305 _chacha = new(key);
         private readonly uint _ivHigh = BinaryPrimitives.ReadUInt32BigEndian(iv);
         private readonly ulong _ivLow = BinaryPrimitives.ReadUInt64BigEndian(iv[4..]);
 
-        public override int Overhead => CipherSuiteInfo.TagLength;
+        public override int Overhead => TagLength;
 
         public override int PlaintextOffset => 0;
 
@@ -186,7 +221,7 @@ internal abstract class RecordCipher : IDisposable
                 nonce,
                 plaintext,
                 fragment[..plaintext.Length],
-                fragment.Slice(plaintext.Length, CipherSuiteInfo.TagLength),
+                fragment.Slice(plaintext.Length, TagLength),
                 additional
             );
             return plaintext.Length + Overhead;
@@ -211,18 +246,12 @@ internal abstract class RecordCipher : IDisposable
             Span<byte> body = fragment[..length];
             try
             {
-                _chacha.Decrypt(
-                    nonce,
-                    body,
-                    fragment.Slice(length, CipherSuiteInfo.TagLength),
-                    body,
-                    additional
-                );
+                _chacha.Decrypt(nonce, body, fragment.Slice(length, TagLength), body, additional);
                 return length;
             }
             catch (AuthenticationTagMismatchException)
             {
-                // Deliberately not logged here: see AesGcmCipher.Open.
+                // Deliberately not logged here: see SaltedCipher.Open.
                 return -1;
             }
         }

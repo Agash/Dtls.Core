@@ -12,6 +12,10 @@ public sealed class RecordLayerTests
     [DataRow(TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256)]
     [DataRow(TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384)]
     [DataRow(TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256)]
+    [DataRow(TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CCM)]
+    [DataRow(TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_256_CCM)]
+    [DataRow(TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8)]
+    [DataRow(TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_256_CCM_8)]
     public void Read_ProtectedRecords_OpenOnceInPlace(TlsCipherSuite suite)
     {
         Assert.IsTrue(CipherSuiteInfo.TryGet(suite, out CipherSuiteInfo info));
@@ -66,6 +70,57 @@ public sealed class RecordLayerTests
 
             Assert.IsEmpty(collector.Payloads);
             Assert.AreEqual(1, receiver.Dropped);
+        }
+    }
+
+    // RFC 9147 section 4.5.3 and Appendix B: each AEAD bounds the forgeries one key may see, AES-CCM with
+    // an 8-byte tag at 2^7, and RFC 7251's CCM suites carry an 8-byte explicit nonce and their own tag.
+    [TestMethod]
+    [DataRow(TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, 1L << 36, 24)]
+    [DataRow(TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256, 1L << 36, 16)]
+    [DataRow(TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CCM, 11_863_283L, 24)]
+    [DataRow(TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8, 128L, 16)]
+    public void Ciphers_CarryTheirAeadsLimitsAndOverhead(
+        TlsCipherSuite suite,
+        long integrityLimit,
+        int overhead
+    )
+    {
+        Assert.IsTrue(CipherSuiteInfo.TryGet(suite, out CipherSuiteInfo info));
+        (RecordLayer sender, RecordLayer receiver) = Pair(info);
+        using (sender)
+        using (receiver)
+        {
+            Assert.AreEqual(integrityLimit, receiver.IntegrityLimit);
+            Assert.AreEqual(13 + overhead, sender.Overhead(1));
+        }
+    }
+
+    [TestMethod]
+    public void Read_ForgeriesUnderAesCcm8_ReachTheLimitAt128()
+    {
+        Assert.IsTrue(
+            CipherSuiteInfo.TryGet(
+                TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8,
+                out CipherSuiteInfo info
+            )
+        );
+        (RecordLayer sender, RecordLayer receiver) = Pair(info);
+        using (sender)
+        using (receiver)
+        {
+            for (int i = 0; i < 128; i++)
+            {
+                _ = sender.Write(ContentType.ApplicationData, 1, [1, 2, 3]);
+                byte[] forged = Take(sender);
+                forged[^1] ^= 1;
+                Assert.IsFalse(receiver.IntegrityLimitReached, $"Reached after {i} forgeries.");
+                Collector collector = new(forged);
+                receiver.Read(forged, ref collector);
+            }
+
+            Assert.IsTrue(receiver.IntegrityLimitReached);
+            Assert.AreEqual(128, receiver.FailedUnderCurrentKeys);
         }
     }
 

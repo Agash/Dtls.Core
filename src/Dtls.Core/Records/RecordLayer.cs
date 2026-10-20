@@ -171,10 +171,13 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
     // Records dropped because they failed to parse, authenticate, or were replays.
     public long Dropped { get; private set; }
 
-    // Records that may fail to authenticate under the keys of one epoch. RFC 9147 section 4.5.3 bounds
-    // this per key: past 2^36 forgeries an attacker's chance against AES-GCM and ChaCha20-Poly1305 is no
-    // longer negligible, and the connection must end. Lower only in tests.
-    public long IntegrityLimit { get; set; } = 1L << 36;
+    // Records that may fail to authenticate under the current read keys. RFC 9147 section 4.5.3 bounds
+    // this per key and AEAD: past it an attacker's chance of a forgery is no longer negligible, and the
+    // connection must end.
+    public long IntegrityLimit => IntegrityLimitOverride ?? LimitOf(_read[^1]);
+
+    // For tests: a limit in place of the AEAD's.
+    public long? IntegrityLimitOverride { get; set; }
 
     // Records protected under the current write keys.
     public ulong WrittenUnderCurrentKeys => _write[^1].NextSequence;
@@ -204,7 +207,7 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
     {
         WriteState state = FindWrite(epoch);
         return state.Cipher13 is not null
-                ? UnifiedHeaderSize + _sendCid.Length + 1 + RecordCipher13.TagLength
+                ? UnifiedHeaderSize + _sendCid.Length + 1 + state.Cipher13.TagLength
             : state.Cipher is null ? RecordHeader.Size
             : CidIn12 ? RecordHeader.Size + _sendCid.Length + state.Cipher.Overhead + 1
             : RecordHeader.Size + state.Cipher.Overhead;
@@ -301,7 +304,7 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
     private void CountFailure(ReadState state)
     {
         AuthenticationFailures++;
-        if (++state.AuthenticationFailures >= IntegrityLimit)
+        if (++state.AuthenticationFailures >= (IntegrityLimitOverride ?? LimitOf(state)))
         {
             IntegrityLimitReached = true;
         }
@@ -504,7 +507,7 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
         BinaryPrimitives.WriteUInt16BigEndian(header[(1 + cid)..], (ushort)sequence);
         BinaryPrimitives.WriteUInt16BigEndian(
             header[(3 + cid)..],
-            (ushort)(payload.Length + 1 + RecordCipher13.TagLength)
+            (ushort)(payload.Length + 1 + cipher.TagLength)
         );
         Span<byte> body = record[headerSize..];
         payload.CopyTo(body);
@@ -891,6 +894,10 @@ internal sealed class RecordLayer(int maximumDatagram) : IDisposable
     {
         public ulong NextSequence { get; set; }
     }
+
+    // The plaintext epoch fails nothing it could protect; a record that does not parse is not counted.
+    private static long LimitOf(EpochState state) =>
+        state.Cipher?.IntegrityLimit ?? state.Cipher13?.IntegrityLimit ?? long.MaxValue;
 
     private sealed class ReadState(ushort epoch, RecordCipher? cipher, RecordCipher13? cipher13)
         : EpochState(epoch, cipher, cipher13)

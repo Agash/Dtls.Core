@@ -80,6 +80,7 @@ public sealed class KeySchedule13Tests
     [DataRow(TlsCipherSuite.TLS_AES_128_GCM_SHA256)]
     [DataRow(TlsCipherSuite.TLS_AES_256_GCM_SHA384)]
     [DataRow(TlsCipherSuite.TLS_CHACHA20_POLY1305_SHA256)]
+    [DataRow(TlsCipherSuite.TLS_AES_128_CCM_SHA256)]
     public void Read_Dtls13Records_OpenWithReconstructedSequenceNumbers(TlsCipherSuite name)
     {
         Assert.IsTrue(CipherSuiteInfo.TryGet(name, out CipherSuiteInfo suite));

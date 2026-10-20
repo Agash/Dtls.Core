@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Security.Cryptography;
@@ -43,6 +44,11 @@ public sealed partial class OpenSslInteropTests
     [DataRow(DtlsKeyType.EcdsaP256, "ECDHE-ECDSA-AES256-GCM-SHA384", false)]
     [DataRow(DtlsKeyType.EcdsaP256, "ECDHE-ECDSA-CHACHA20-POLY1305", false)]
     [DataRow(DtlsKeyType.Rsa2048, "ECDHE-RSA-AES128-GCM-SHA256", false)]
+    [DataRow(DtlsKeyType.EcdsaP256, "ECDHE-ECDSA-AES128-CCM", false)]
+    [DataRow(DtlsKeyType.EcdsaP256, "ECDHE-ECDSA-AES256-CCM", true)]
+    // OpenSSL rates an 8-byte tag at 64 bits of security, which only security level 0 admits.
+    [DataRow(DtlsKeyType.EcdsaP256, "ECDHE-ECDSA-AES128-CCM8:@SECLEVEL=0", false)]
+    [DataRow(DtlsKeyType.EcdsaP256, "ECDHE-ECDSA-AES256-CCM8:@SECLEVEL=0", false)]
     public async Task Connect_ToOpenSslServer_AgreesOnKeys(
         DtlsKeyType keyType,
         string cipher,
@@ -83,6 +89,14 @@ public sealed partial class OpenSslInteropTests
         );
         DtlsClientConnectionOptions options = HandshakeTests.Client(own, peer);
         options.MaximumDatagramSize = smallDatagrams ? 300 : 1200;
+
+        // The 8-byte-tag CCM suites are offered only when asked for; offer every suite here so the
+        // server's one cipher decides.
+        options.CipherSuites =
+        [
+            .. Enum.GetValues<TlsCipherSuite>()
+                .Where(static s => s.ToString().StartsWith("TLS_ECDHE_", StringComparison.Ordinal)),
+        ];
         await using DtlsConnection connection = await DtlsConnection
             .ConnectAsync(transport, options, TestContext.CancellationToken)
             .AsTask()
